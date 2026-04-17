@@ -26,9 +26,9 @@ app.get("/connect", async (req, res) => {
     const response = await axios.post(
       `${BASE_URL}/links/`,
       {
-        institution: "erebor_br_retail", // banco fake sandbox
-        username: "user",
-        password: "pass"
+        institution: "belvo_test_bank", // banco fake sandbox
+        username: "john_doe",
+        password: "1234"
       },
       {
         auth: {
