@@ -105,3 +105,24 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor rodando na porta " + PORT);
 });
+
+app.get("/institutions", async (req, res) => {
+  try {
+    const response = await axios.get(
+      "https://sandbox.belvo.com/api/institutions/",
+      {
+        auth: {
+          username: process.env.BELVO_ID,
+          password: process.env.BELVO_SECRET
+        }
+      }
+    );
+
+    res.json(response.data);
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.response?.data || err.message
+    });
+  }
+});
