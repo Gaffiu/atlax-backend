@@ -13,9 +13,31 @@ const BELVO_SECRET = process.env.BELVO_SECRET;
 // 🔥 BASE BELVO
 const BASE_URL = "https://sandbox.belvo.com/api";
 
-// TESTE
+// =======================
+// 🚀 TESTE
+// =======================
 app.get("/", (req, res) => {
   res.send("Atlax backend rodando 🚀");
+});
+
+// =======================
+// 🏦 LISTAR INSTITUIÇÕES
+// =======================
+app.get("/institutions", async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/institutions/`, {
+      auth: {
+        username: BELVO_ID,
+        password: BELVO_SECRET
+      }
+    });
+
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({
+      error: err.response?.data || err.message
+    });
+  }
 });
 
 // =======================
@@ -24,26 +46,28 @@ app.get("/", (req, res) => {
 app.get("/connect", async (req, res) => {
   try {
     const response = await axios.post(
-      "https://sandbox.belvo.com/api/links/",
+      `${BASE_URL}/links/`,
       {
-        institution: "belvo_test_bank",
+        institution: "belvo_test_bank", // depois pode trocar
         username: "john_doe",
         password: "1234"
       },
       {
         auth: {
-          username: process.env.BELVO_ID,
-          password: process.env.BELVO_SECRET
+          username: BELVO_ID,
+          password: BELVO_SECRET
         }
       }
     );
 
     res.json(response.data);
-
   } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
+    res.status(500).json({
+      error: err.response?.data || err.message
+    });
   }
 });
+
 // =======================
 // 💳 CONTAS
 // =======================
@@ -60,7 +84,6 @@ app.get("/accounts/:linkId", async (req, res) => {
     );
 
     res.json(response.data);
-
   } catch (err) {
     res.status(500).json({
       error: err.response?.data || err.message
@@ -89,7 +112,6 @@ app.get("/transactions/:linkId", async (req, res) => {
     );
 
     res.json(response.data);
-
   } catch (err) {
     res.status(500).json({
       error: err.response?.data || err.message
@@ -97,48 +119,11 @@ app.get("/transactions/:linkId", async (req, res) => {
   }
 });
 
-// PORTA
+// =======================
+// 🚪 PORTA
+// =======================
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log("Servidor rodando na porta " + PORT);
-});
-
-app.get("/institutions", async (req, res) => {
-  try {
-    const response = await axios.get(
-      "https://sandbox.belvo.com/api/institutions/",
-      {
-        auth: {
-          username: process.env.BELVO_ID,
-          password: process.env.BELVO_SECRET
-        }
-      }
-    );
-
-    res.json(response.data);
-
-  } catch (err) {
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
-  }
-});
-
-app.get("/institutions", async (req, res) => {
-  try {
-    const response = await axios.get(
-      "https://sandbox.belvo.com/api/institutions/",
-      {
-        auth: {
-          username: process.env.BELVO_ID,
-          password: process.env.BELVO_SECRET
-        }
-      }
-    );
-
-    res.json(response.data);
-
-  } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
-  }
 });
