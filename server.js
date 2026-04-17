@@ -16,9 +16,7 @@ app.get("/", (req, res) => {
   res.send("Atlax backend rodando 🚀");
 });
 
-// =======================
-// 🏦 LISTAR INSTITUIÇÕES
-// =======================
+// INSTITUTIONS
 app.get("/institutions", async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/institutions/`, {
@@ -34,18 +32,15 @@ app.get("/institutions", async (req, res) => {
   }
 });
 
-// =======================
-// 🔗 CONNECT (CORRIGIDO)
-// =======================
+// CONNECT (FUNCIONA)
 app.get("/connect", async (req, res) => {
   try {
     const response = await axios.post(
       `${BASE_URL}/links/`,
       {
-        institution: "ironbank_br_business", // ✅ EXISTE
-        username: "12345678900",
-        password: "1234",
-        username_type: "003" // 🔥 OBRIGATÓRIO
+        institution: "sandbox_bank",
+        username: "user",
+        password: "pass"
       },
       {
         auth: {
@@ -61,9 +56,7 @@ app.get("/connect", async (req, res) => {
   }
 });
 
-// =======================
-// 💳 CONTAS
-// =======================
+// ACCOUNTS
 app.get("/accounts/:linkId", async (req, res) => {
   try {
     const response = await axios.get(
@@ -82,9 +75,7 @@ app.get("/accounts/:linkId", async (req, res) => {
   }
 });
 
-// =======================
-// 💸 TRANSAÇÕES
-// =======================
+// TRANSACTIONS
 app.get("/transactions/:linkId", async (req, res) => {
   try {
     const response = await axios.post(
