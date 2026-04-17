@@ -6,11 +6,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 ENV
 const BELVO_ID = process.env.BELVO_ID;
 const BELVO_SECRET = process.env.BELVO_SECRET;
 
-// 🔥 BASE URL
 const BASE_URL = "https://sandbox.belvo.com/api";
 
 // TESTE
@@ -19,16 +17,35 @@ app.get("/", (req, res) => {
 });
 
 // =======================
-// 🔗 CONNECT (cria link)
+// 🏦 LISTAR INSTITUIÇÕES
+// =======================
+app.get("/institutions", async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/institutions/`, {
+      auth: {
+        username: BELVO_ID,
+        password: BELVO_SECRET
+      }
+    });
+
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json(err.response?.data || err.message);
+  }
+});
+
+// =======================
+// 🔗 CONNECT (CORRIGIDO)
 // =======================
 app.get("/connect", async (req, res) => {
   try {
     const response = await axios.post(
       `${BASE_URL}/links/`,
       {
-        institution: "ironbank_br_business", // ✅ FIX AQUI
-        username: "test_user",
-        password: "test_password"
+        institution: "ironbank_br_business", // ✅ EXISTE
+        username: "12345678900",
+        password: "1234",
+        username_type: "003" // 🔥 OBRIGATÓRIO
       },
       {
         auth: {
@@ -39,29 +56,6 @@ app.get("/connect", async (req, res) => {
     );
 
     res.json(response.data);
-
-  } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
-  }
-});
-
-// =======================
-// 🏦 INSTITUTIONS
-// =======================
-app.get("/institutions", async (req, res) => {
-  try {
-    const response = await axios.get(
-      `${BASE_URL}/institutions/`,
-      {
-        auth: {
-          username: BELVO_ID,
-          password: BELVO_SECRET
-        }
-      }
-    );
-
-    res.json(response.data);
-
   } catch (err) {
     res.status(500).json(err.response?.data || err.message);
   }
@@ -83,7 +77,6 @@ app.get("/accounts/:linkId", async (req, res) => {
     );
 
     res.json(response.data);
-
   } catch (err) {
     res.status(500).json(err.response?.data || err.message);
   }
@@ -110,13 +103,11 @@ app.get("/transactions/:linkId", async (req, res) => {
     );
 
     res.json(response.data);
-
   } catch (err) {
     res.status(500).json(err.response?.data || err.message);
   }
 });
 
-// PORTA
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Servidor rodando na porta " + PORT);
