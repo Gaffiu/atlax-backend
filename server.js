@@ -24,16 +24,16 @@ app.get("/", (req, res) => {
 app.get("/connect", async (req, res) => {
   try {
     const response = await axios.post(
-      `${BASE_URL}/links/`,
+      "https://sandbox.belvo.com/api/links/",
       {
-        institution: "belvo_test_bank", // banco fake sandbox
+        institution: "belvo_test_bank",
         username: "john_doe",
         password: "1234"
       },
       {
         auth: {
-          username: BELVO_ID,
-          password: BELVO_SECRET
+          username: process.env.BELVO_ID,
+          password: process.env.BELVO_SECRET
         }
       }
     );
@@ -41,12 +41,9 @@ app.get("/connect", async (req, res) => {
     res.json(response.data);
 
   } catch (err) {
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
+    res.status(500).json(err.response?.data || err.message);
   }
 });
-
 // =======================
 // 💳 CONTAS
 // =======================
