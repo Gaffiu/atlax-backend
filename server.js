@@ -126,3 +126,22 @@ app.get("/institutions", async (req, res) => {
     });
   }
 });
+
+app.get("/institutions", async (req, res) => {
+  try {
+    const response = await axios.get(
+      "https://sandbox.belvo.com/api/institutions/",
+      {
+        auth: {
+          username: process.env.BELVO_ID,
+          password: process.env.BELVO_SECRET
+        }
+      }
+    );
+
+    res.json(response.data);
+
+  } catch (err) {
+    res.status(500).json(err.response?.data || err.message);
+  }
+});
