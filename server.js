@@ -48,14 +48,10 @@ app.get("/institutions", async (req, res) => {
 app.get("/connect", async (req, res) => {
   try {
     const response = await axios.post(
-      `${BASE_URL}/links/`,
-      {
-        // ✅ INSTITUIÇÃO CORRETA (sandbox funcionando)
-        institution: "ofmockbank_br_retail",
-
-        // ✅ CPF fake válido
-        username: "12345678901"
-      },
+      `${BASE_URL}/links/`,{
+  institution: "ofmockbank_br_retail",
+  username: "12345678901"
+},
       {
         auth: {
           username: BELVO_ID,
