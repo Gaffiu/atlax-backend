@@ -5,8 +5,9 @@
   "scripts": {
     "start": "node server.js"
   },
+{
   "dependencies": {
-    "pluggy-sdk": "latest",
+    "sdk": "latest",
     "cors": "^2.8.5"
   }
 }
