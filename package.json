@@ -8,5 +8,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "pluggy-sdk": "latest"
+    "cors": "^2.8.5"
   }
 }
