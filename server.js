@@ -9,8 +9,8 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // 🔐 SUAS CHAVES PLUGGY
-const CLIENT_ID = "SEU_CLIENT_ID";
-const CLIENT_SECRET = "SEU_CLIENT_SECRET";
+const CLIENT_ID = "f27b8426-cade-4df4-91ca-d9e0a589cb7f";
+const CLIENT_SECRET = "c86ae357-bd21-4747-86c1-19d4c7aa0715";
 
 let accessToken = "";
 
