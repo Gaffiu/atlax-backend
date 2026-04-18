@@ -61,3 +61,31 @@ app.get("/transacoes/:itemId", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Servidor rodando na porta " + PORT));
+
+app.get("/connect", async (req, res) => {
+  const response = await fetch("https://api.pluggy.ai/connect_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-KEY": process.env.PLUGGY_CLIENT_ID,
+      "X-API-SECRET": process.env.PLUGGY_CLIENT_SECRET
+    }
+  });
+
+  const data = await response.json();
+  res.json({ accessToken: data.accessToken });
+});
+
+app.get("/transacoes/:itemId", async (req, res) => {
+  const itemId = req.params.itemId;
+
+  const response = await fetch(`https://api.pluggy.ai/transactions?itemId=${itemId}`, {
+    headers: {
+      "X-API-KEY": process.env.PLUGGY_CLIENT_ID,
+      "X-API-SECRET": process.env.PLUGGY_CLIENT_SECRET
+    }
+  });
+
+  const data = await response.json();
+  res.json(data);
+});
