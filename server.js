@@ -89,3 +89,12 @@ app.get("/transacoes/:itemId", async (req, res) => {
   const data = await response.json();
   res.json(data);
 });
+
+app.post("/webhook/pluggy", (req, res) => {
+  const event = req.body;
+
+  console.log("Webhook recebido:", event.event);
+  console.log("Item ID:", event.itemId);
+
+  res.status(200).json({ received: true });
+});
