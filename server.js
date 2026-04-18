@@ -1,4 +1,13 @@
 const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+// 🔥 LIBERA TUDO (modo simples)
+app.use(cors());
+
+app.use(express.json());
+const express = require('express');
 const { PluggyClient } = require('pluggy-sdk');
 
 const app = express();
