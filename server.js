@@ -4,6 +4,12 @@ const { PluggyClient } = require('pluggy-sdk');
 const app = express();
 app.use(express.json());
 
+// rota pra testar no navegador
+app.get('/', (req, res) => {
+  res.send('Servidor rodando 🚀');
+});
+
+// 🔥 ROTA PRINCIPAL (IMPORTANTE)
 app.post('/connect-token', async (req, res) => {
   try {
     const pluggy = new PluggyClient({
@@ -23,4 +29,6 @@ app.post('/connect-token', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Servidor rodando'));
+app.listen(PORT, () => {
+  console.log('Servidor rodando na porta ' + PORT);
+});
