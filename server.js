@@ -1,72 +1,26 @@
-import express from "express";
-import axios from "axios";
-import cors from "cors";
+const express = require('express');
+const { PluggyClient } = require('pluggy-sdk');
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
-
-// 🔐 SUAS CHAVES PLUGGY
-const CLIENT_ID = "f27b8426-cade-4df4-91ca-d9e0a589cb7f";
-const CLIENT_SECRET = "c86ae357-bd21-4747-86c1-19d4c7aa0715";
-
-let accessToken = "";
-
-// 🔥 GERAR TOKEN
-async function gerarToken() {
+app.post('/connect-token', async (req, res) => {
   try {
-    const res = await axios.post("https://api.pluggy.ai/auth", {
-      clientId: CLIENT_ID,
-      clientSecret: CLIENT_SECRET
+    const pluggy = new PluggyClient({
+      clientId: process.env.CLIENT_ID,
+      clientSecret: process.env.CLIENT_SECRET,
     });
 
-    accessToken = res.data.apiKey;
-    console.log("Token Pluggy gerado");
-  } catch (err) {
-    console.error("Erro token:", err.response?.data || err.message);
-  }
-}
+    const { clientUserId } = req.body;
 
-// 🔥 ROTA: CRIAR CONNECT TOKEN (frontend usa isso)
-app.get("/connect", async (req, res) => {
-  try {
-    if (!accessToken) await gerarToken();
+    const connectToken = await pluggy.createConnectToken(clientUserId);
 
-    const response = await axios.post(
-      "https://api.pluggy.ai/connect_token",
-      {},
-      {
-        headers: { "X-API-KEY": accessToken }
-      }
-    );
-
-    res.json(response.data);
-  } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
+    res.json({ accessToken: connectToken.accessToken });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Erro ao gerar token' });
   }
 });
 
-// 🔥 ROTA: PEGAR TRANSAÇÕES
-app.get("/transacoes/:itemId", async (req, res) => {
-  try {
-    const { itemId } = req.params;
-
-    const response = await axios.get(
-      `https://api.pluggy.ai/transactions?itemId=${itemId}`,
-      {
-        headers: { "X-API-KEY": accessToken }
-      }
-    );
-
-    res.json(response.data);
-  } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
-  }
-});
-
-app.listen(PORT, async () => {
-  console.log("Servidor rodando...");
-  await gerarToken();
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('Servidor rodando'));
