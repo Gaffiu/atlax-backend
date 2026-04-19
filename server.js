@@ -6,7 +6,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 SUAS CHAVES
+// 🔐 SUAS CHAVES (melhor usar ENV depois)
 const CLIENT_ID = "f27b8426-cade-4df4-91ca-d9e0a589cb7f";
 const CLIENT_SECRET = "c86ae357-bd21-4747-86c1-19d4c7aa0715";
 
@@ -36,7 +36,9 @@ app.get("/connect", async (req, res) => {
       "https://api.pluggy.ai/connect_token",
       {},
       {
-        headers: { "X-API-KEY": apiKey }
+        headers: {
+          "X-API-KEY": apiKey
+        }
       }
     );
 
@@ -56,7 +58,9 @@ app.get("/transacoes/:itemId", async (req, res) => {
     const response = await axios.get(
       `https://api.pluggy.ai/transactions?itemId=${req.params.itemId}`,
       {
-        headers: { "X-API-KEY": apiKey }
+        headers: {
+          "X-API-KEY": apiKey
+        }
       }
     );
 
@@ -78,6 +82,8 @@ app.post("/webhook/pluggy", (req, res) => {
   res.status(200).json({ received: true });
 });
 
-// 🚀 START
+// 🚀 START SERVIDOR
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 Servidor rodando na porta " + PORT));
+app.listen(PORT, () => {
+  console.log("🚀 Servidor rodando na porta " + PORT);
+});
