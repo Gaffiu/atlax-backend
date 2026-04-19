@@ -6,13 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 SUAS CHAVES (melhor usar ENV depois)
-const CLIENT_ID = "f27b8426-cade-4df4-91ca-d9e0a589cb7f";
-const CLIENT_SECRET = "c86ae357-bd21-4747-86c1-19d4c7aa0715";
+// 🔐 usar ENV (NUNCA deixar no código)
+const CLIENT_ID = process.env.PLUGGY_CLIENT_ID;
+const CLIENT_SECRET = process.env.PLUGGY_CLIENT_SECRET;
 
 let apiKey = null;
 
-// 🔥 AUTENTICAR NA PLUGGY
+// 🔥 autenticação Pluggy
 async function autenticar() {
   try {
     const res = await axios.post("https://api.pluggy.ai/auth", {
@@ -24,10 +24,11 @@ async function autenticar() {
     console.log("🔑 API KEY gerada");
   } catch (e) {
     console.log("Erro auth:", e.response?.data || e.message);
+    throw new Error("Erro na autenticação");
   }
 }
 
-// 🔥 GERAR CONNECT TOKEN
+// 🔥 gerar connect token
 app.get("/connect", async (req, res) => {
   try {
     if (!apiKey) await autenticar();
@@ -50,7 +51,7 @@ app.get("/connect", async (req, res) => {
   }
 });
 
-// 🔥 PEGAR TRANSAÇÕES
+// 🔥 pegar transações
 app.get("/transacoes/:itemId", async (req, res) => {
   try {
     if (!apiKey) await autenticar();
@@ -72,7 +73,7 @@ app.get("/transacoes/:itemId", async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK (OBRIGATÓRIO)
+// 🔥 webhook (Pluggy)
 app.post("/webhook/pluggy", (req, res) => {
   const event = req.body;
 
@@ -82,7 +83,7 @@ app.post("/webhook/pluggy", (req, res) => {
   res.status(200).json({ received: true });
 });
 
-// 🚀 START SERVIDOR
+// 🚀 start servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 Servidor rodando na porta " + PORT);
