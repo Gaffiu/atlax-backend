@@ -5,9 +5,13 @@ const cors = require("cors");
 
 const mercadopago = require("mercadopago");
 
-mercadopago.configure({
-  access_token: process.env.MP_TOKEN
-});
+if (process.env.MP_TOKEN) {
+  mercadopago.configure({
+    access_token: process.env.MP_TOKEN
+  });
+} else {
+  console.warn("⚠️  MP_TOKEN not set. Mercado Pago endpoints will fail until configured.");
+}
 
 const app = express();
 app.use(cors());
@@ -203,8 +207,25 @@ app.post("/webhook/pluggy", (req, res) => {
   res.status(200).json({ received: true });
 });
 
+app.get("/", (req, res) => {
+  res.json({
+    name: "atlax-backend",
+    status: "ok",
+    endpoints: [
+      "GET  /connect",
+      "POST /criar-usuario",
+      "GET  /saldo/:uid",
+      "POST /deposito",
+      "POST /webhook/mp",
+      "POST /saque",
+      "GET  /transacoes/:itemId",
+      "POST /webhook/pluggy"
+    ]
+  });
+});
+
 // 🚀 start servidor
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, "0.0.0.0", () => {
   console.log("🚀 Servidor rodando na porta " + PORT);
 });
