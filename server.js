@@ -1,51 +1,79 @@
-const db = require("./firebase");
+// 🔥 LOG INICIAL
+console.log("🔥 Iniciando servidor...");
+
+// 🔥 TRATAMENTO DE ERROS GLOBAIS
+process.on("uncaughtException", (err) => {
+  console.error("💥 Erro não tratado:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("💥 Promise rejeitada:", err);
+});
+
+// 🔥 IMPORTS
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const db = require("./firebase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 
+// 🔥 APP
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-let payment;
+// 🔥 ENV CHECK
+const {
+  MP_TOKEN,
+  PLUGGY_CLIENT_ID,
+  PLUGGY_CLIENT_SECRET
+} = process.env;
 
-// 🔐 CONFIG MERCADO PAGO
-if (!process.env.MP_TOKEN) {
-  console.error("❌ MP_TOKEN não definido");
-} else {
+if (!MP_TOKEN) {
+  console.error("❌ MP_TOKEN NÃO DEFINIDO");
+}
+
+if (!PLUGGY_CLIENT_ID || !PLUGGY_CLIENT_SECRET) {
+  console.error("❌ PLUGGY NÃO CONFIGURADO");
+}
+
+// 🔥 MERCADO PAGO
+let payment = null;
+
+if (MP_TOKEN) {
   const client = new MercadoPagoConfig({
-    accessToken: process.env.MP_TOKEN
+    accessToken: MP_TOKEN
   });
 
   payment = new Payment(client);
 }
 
-// 🔐 CONFIG PLUGGY
-const CLIENT_ID = process.env.PLUGGY_CLIENT_ID;
-const CLIENT_SECRET = process.env.PLUGGY_CLIENT_SECRET;
-
+// 🔥 PLUGGY
 let apiKey = null;
 
-// 🔥 autenticar pluggy
-async function autenticar() {
-  const res = await axios.post("https://api.pluggy.ai/auth", {
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET
-  });
+async function autenticarPluggy() {
+  try {
+    const res = await axios.post("https://api.pluggy.ai/auth", {
+      clientId: PLUGGY_CLIENT_ID,
+      clientSecret: PLUGGY_CLIENT_SECRET
+    });
 
-  apiKey = res.data.apiKey;
+    apiKey = res.data.apiKey;
+    console.log("🔑 Pluggy autenticado");
+  } catch (err) {
+    console.error("❌ Erro Pluggy:", err.response?.data || err.message);
+  }
 }
 
-// 🔥 ROTA TESTE
+// 🔥 HEALTH CHECK (IMPORTANTE PRO RENDER)
 app.get("/", (req, res) => {
-  res.send("API Atlax rodando 🚀");
+  res.status(200).send("API Atlax rodando 🚀");
 });
 
 // 🔥 CONNECT
 app.get("/connect", async (req, res) => {
   try {
-    if (!apiKey) await autenticar();
+    if (!apiKey) await autenticarPluggy();
 
     const response = await axios.post(
       "https://api.pluggy.ai/connect_token",
@@ -58,44 +86,58 @@ app.get("/connect", async (req, res) => {
     res.json({ accessToken: response.data.accessToken });
 
   } catch (e) {
-    console.log(e.response?.data || e.message);
+    console.error("❌ Connect erro:", e.response?.data || e.message);
     res.status(500).json({ erro: "Erro connect" });
   }
 });
 
 // 🔥 CRIAR USUÁRIO
 app.post("/criar-usuario", async (req, res) => {
-  const { uid } = req.body;
+  try {
+    const { uid } = req.body;
 
-  if (!uid) {
-    return res.status(400).json({ erro: "UID obrigatório" });
+    if (!uid) {
+      return res.status(400).json({ erro: "UID obrigatório" });
+    }
+
+    const ref = db.collection("users").doc(uid);
+    const doc = await ref.get();
+
+    if (!doc.exists) {
+      await ref.set({
+        saldo: 0,
+        criadoEm: new Date()
+      });
+    }
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error("❌ Erro criar usuário:", err);
+    res.status(500).json({ erro: "Erro interno" });
   }
-
-  const ref = db.collection("users").doc(uid);
-  const doc = await ref.get();
-
-  if (!doc.exists) {
-    await ref.set({
-      saldo: 0,
-      criadoEm: new Date()
-    });
-  }
-
-  res.json({ ok: true });
 });
 
 // 🔥 SALDO
 app.get("/saldo/:uid", async (req, res) => {
-  const doc = await db.collection("users").doc(req.params.uid).get();
+  try {
+    const doc = await db.collection("users").doc(req.params.uid).get();
 
-  if (!doc.exists) return res.json({ saldo: 0 });
+    if (!doc.exists) return res.json({ saldo: 0 });
 
-  res.json({ saldo: doc.data().saldo });
+    res.json({ saldo: doc.data().saldo });
+
+  } catch (err) {
+    console.error("❌ Erro saldo:", err);
+    res.status(500).json({ erro: "Erro interno" });
+  }
 });
 
 // 🔥 GERAR PIX
 app.post("/deposito", async (req, res) => {
   try {
+    console.log("📦 Depósito recebido:", req.body);
+
     if (!payment) {
       return res.status(500).json({ erro: "Mercado Pago não configurado" });
     }
@@ -128,7 +170,7 @@ app.post("/deposito", async (req, res) => {
     });
 
   } catch (err) {
-    console.log("Erro MP:", err.response?.data || err.message);
+    console.error("❌ Erro MP:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao gerar PIX" });
   }
 });
@@ -136,6 +178,8 @@ app.post("/deposito", async (req, res) => {
 // 🔥 WEBHOOK MERCADO PAGO
 app.post("/webhook/mp", async (req, res) => {
   try {
+    console.log("📩 Webhook recebido:", req.body);
+
     if (!payment) return res.sendStatus(200);
 
     const paymentId = req.body?.data?.id;
@@ -166,47 +210,59 @@ app.post("/webhook/mp", async (req, res) => {
     res.sendStatus(200);
 
   } catch (e) {
-    console.log(e);
+    console.error("❌ Webhook erro:", e);
     res.sendStatus(500);
   }
 });
 
 // 🔥 SAQUE
 app.post("/saque", async (req, res) => {
-  const { uid, valor, pix } = req.body;
+  try {
+    const { uid, valor, pix } = req.body;
 
-  if (!uid || !valor || !pix) {
-    return res.status(400).json({ erro: "Dados inválidos" });
+    if (!uid || !valor || !pix) {
+      return res.status(400).json({ erro: "Dados inválidos" });
+    }
+
+    const ref = db.collection("users").doc(uid);
+    const doc = await ref.get();
+
+    if (!doc.exists) {
+      return res.status(400).json({ erro: "Usuário não existe" });
+    }
+
+    const saldo = doc.data().saldo;
+
+    if (valor > saldo) {
+      return res.status(400).json({ erro: "Saldo insuficiente" });
+    }
+
+    await ref.update({ saldo: saldo - valor });
+
+    await db.collection("saques").add({
+      uid,
+      valor,
+      pix,
+      status: "pendente",
+      criadoEm: new Date()
+    });
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error("❌ Erro saque:", err);
+    res.status(500).json({ erro: "Erro interno" });
   }
-
-  const ref = db.collection("users").doc(uid);
-  const doc = await ref.get();
-
-  if (!doc.exists) {
-    return res.status(400).json({ erro: "Usuário não existe" });
-  }
-
-  const saldo = doc.data().saldo;
-
-  if (valor > saldo) {
-    return res.status(400).json({ erro: "Saldo insuficiente" });
-  }
-
-  await ref.update({ saldo: saldo - valor });
-
-  await db.collection("saques").add({
-    uid,
-    valor,
-    pix,
-    status: "pendente",
-    criadoEm: new Date()
-  });
-
-  res.json({ ok: true });
 });
 
-// 🚀 START
-const PORT = process.env.PORT || 10000;
+// 🚀 START (CORRETO PRO RENDER)
+const PORT = process.env.PORT;
+
+if (!PORT) {
+  console.error("❌ PORT não definida pelo Render");
+  process.exit(1);
+}
+
 app.listen(PORT, () => {
-  console.log("🚀 Rodando na porta " + PORT);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
