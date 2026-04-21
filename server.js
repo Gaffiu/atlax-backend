@@ -3,6 +3,12 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 
+const mercadopago = require("mercadopago");
+
+mercadopago.configure({
+  access_token: process.env.MP_TOKEN
+});
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -50,6 +56,119 @@ app.get("/connect", async (req, res) => {
     console.log(e.response?.data || e.message);
     res.status(500).json({ erro: "Erro ao gerar token" });
   }
+});
+
+app.post("/criar-usuario", async (req, res) => {
+  const { uid } = req.body;
+
+  const userRef = db.collection("users").doc(uid);
+  const doc = await userRef.get();
+
+  if (!doc.exists) {
+    await userRef.set({
+      saldo: 0,
+      criadoEm: new Date()
+    });
+  }
+
+  res.json({ ok: true });
+});
+
+app.get("/saldo/:uid", async (req, res) => {
+  const doc = await db.collection("users").doc(req.params.uid).get();
+
+  if (!doc.exists) {
+    return res.json({ saldo: 0 });
+  }
+
+  res.json({ saldo: doc.data().saldo });
+});
+
+app.post("/deposito", async (req, res) => {
+  try {
+    const { valor, uid } = req.body;
+
+    const pagamento = await mercadopago.payment.create({
+      transaction_amount: Number(valor),
+      payment_method_id: "pix",
+      payer: {
+        email: "cliente@atlax.com"
+      }
+    });
+
+    res.json({
+      id: pagamento.body.id,
+      qr_img: pagamento.body.point_of_interaction.transaction_data.qr_code_base64
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ erro: "Erro ao gerar PIX" });
+  }
+});
+
+app.post("/webhook/mp", async (req, res) => {
+  try {
+    const paymentId = req.body.data.id;
+
+    const pagamento = await mercadopago.payment.findById(paymentId);
+
+    if (pagamento.body.status === "approved") {
+
+      const valor = pagamento.body.transaction_amount;
+
+      // ⚠️ você precisa salvar uid junto no depósito (depois melhoramos isso)
+      const uid = "TEMP_UID";
+
+      const userRef = db.collection("users").doc(uid);
+      const doc = await userRef.get();
+
+      const saldoAtual = doc.data().saldo || 0;
+
+      await userRef.update({
+        saldo: saldoAtual + valor
+      });
+
+      console.log("💰 Depósito confirmado:", valor);
+    }
+
+    res.sendStatus(200);
+
+  } catch (e) {
+    console.log(e);
+    res.sendStatus(500);
+  }
+});
+
+app.post("/saque", async (req, res) => {
+  const { uid, valor, pix } = req.body;
+
+  const userRef = db.collection("users").doc(uid);
+  const doc = await userRef.get();
+
+  if (!doc.exists) {
+    return res.status(400).json({ erro: "Usuário não encontrado" });
+  }
+
+  const saldo = doc.data().saldo;
+
+  if (valor > saldo) {
+    return res.status(400).json({ erro: "Saldo insuficiente" });
+  }
+
+  await userRef.update({
+    saldo: saldo - valor
+  });
+
+  await db.collection("saques").add({
+    uid,
+    valor,
+    pix,
+    status: "pendente",
+    criadoEm: new Date()
+  });
+
+  res.json({ ok: true });
 });
 
 // 🔥 pegar transações
