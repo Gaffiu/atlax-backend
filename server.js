@@ -2,19 +2,22 @@ const db = require("./firebase");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const mercadopago = require("mercadopago");
+const { MercadoPagoConfig, Payment } = require("mercadopago");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 CONFIG MERCADO PAGO
+let payment;
+
 if (!process.env.MP_TOKEN) {
   console.error("❌ MP_TOKEN não definido");
 } else {
-  mercadopago.configure({
-    access_token: process.env.MP_TOKEN
+  const client = new MercadoPagoConfig({
+    accessToken: process.env.MP_TOKEN
   });
+
+  payment = new Payment(client);
 }
 
 // 🔐 CONFIG PLUGGY
