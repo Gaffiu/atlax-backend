@@ -10,6 +10,7 @@ app.use(express.json());
 
 let payment;
 
+// 🔐 CONFIG MERCADO PAGO
 if (!process.env.MP_TOKEN) {
   console.error("❌ MP_TOKEN não definido");
 } else {
@@ -36,6 +37,11 @@ async function autenticar() {
   apiKey = res.data.apiKey;
 }
 
+// 🔥 ROTA TESTE
+app.get("/", (req, res) => {
+  res.send("API Atlax rodando 🚀");
+});
+
 // 🔥 CONNECT
 app.get("/connect", async (req, res) => {
   try {
@@ -61,6 +67,10 @@ app.get("/connect", async (req, res) => {
 app.post("/criar-usuario", async (req, res) => {
   const { uid } = req.body;
 
+  if (!uid) {
+    return res.status(400).json({ erro: "UID obrigatório" });
+  }
+
   const ref = db.collection("users").doc(uid);
   const doc = await ref.get();
 
@@ -83,30 +93,36 @@ app.get("/saldo/:uid", async (req, res) => {
   res.json({ saldo: doc.data().saldo });
 });
 
-// 🔥 GERAR PIX (CORRIGIDO)
+// 🔥 GERAR PIX
 app.post("/deposito", async (req, res) => {
   try {
+    if (!payment) {
+      return res.status(500).json({ erro: "Mercado Pago não configurado" });
+    }
+
     const { valor, uid } = req.body;
 
     if (!valor || valor <= 0) {
       return res.status(400).json({ erro: "Valor inválido" });
     }
 
-    const pagamento = await mercadopago.payment.create({
-      transaction_amount: Number(valor),
-      payment_method_id: "pix",
-      payer: {
-        email: "cliente@atlax.com"
-      },
-      metadata: {
-        uid // 🔥 salva usuário no pagamento
+    const pagamento = await payment.create({
+      body: {
+        transaction_amount: Number(valor),
+        payment_method_id: "pix",
+        payer: {
+          email: "cliente@atlax.com"
+        },
+        metadata: {
+          uid
+        }
       }
     });
 
-    const qr = pagamento.body.point_of_interaction.transaction_data;
+    const qr = pagamento.point_of_interaction.transaction_data;
 
     res.json({
-      id: pagamento.body.id,
+      id: pagamento.id,
       qr_img: qr.qr_code_base64,
       copia_cola: qr.qr_code
     });
@@ -117,17 +133,21 @@ app.post("/deposito", async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK MERCADO PAGO (ATUALIZA SALDO)
+// 🔥 WEBHOOK MERCADO PAGO
 app.post("/webhook/mp", async (req, res) => {
   try {
-    const paymentId = req.body.data.id;
+    if (!payment) return res.sendStatus(200);
 
-    const pagamento = await mercadopago.payment.findById(paymentId);
+    const paymentId = req.body?.data?.id;
 
-    if (pagamento.body.status === "approved") {
+    if (!paymentId) return res.sendStatus(200);
 
-      const valor = pagamento.body.transaction_amount;
-      const uid = pagamento.body.metadata?.uid;
+    const pagamento = await payment.get({ id: paymentId });
+
+    if (pagamento.status === "approved") {
+
+      const valor = pagamento.transaction_amount;
+      const uid = pagamento.metadata?.uid;
 
       if (!uid) return res.sendStatus(200);
 
@@ -154,6 +174,10 @@ app.post("/webhook/mp", async (req, res) => {
 // 🔥 SAQUE
 app.post("/saque", async (req, res) => {
   const { uid, valor, pix } = req.body;
+
+  if (!uid || !valor || !pix) {
+    return res.status(400).json({ erro: "Dados inválidos" });
+  }
 
   const ref = db.collection("users").doc(uid);
   const doc = await ref.get();
@@ -182,7 +206,7 @@ app.post("/saque", async (req, res) => {
 });
 
 // 🚀 START
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log("🚀 Rodando na porta " + PORT);
 });
