@@ -257,9 +257,9 @@ app.post("/webhook/mp", async (req, res) => {
 
       const saldoAtual = doc.data()?.saldo || 0;
 
-      await ref.set({
-        saldo: saldoAtual + valor
-      }, { merge: true });
+      await ref.update({
+  saldo: admin.firestore.FieldValue.increment(Number(valor))
+});
 
       console.log("💰 Depósito aprovado:", valor);
     }
