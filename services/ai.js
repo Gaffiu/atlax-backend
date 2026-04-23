@@ -1,24 +1,48 @@
-const OpenAI = require("openai");
+const axios = require("axios");
+const { db } = require("../firebase");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+async function analisarUsuario(uid) {
+  const userRef = db.collection("users").doc(uid);
+  const userDoc = await userRef.get();
 
-async function gerarRecomendacao(userData) {
+  const transacoesSnap = await db
+    .collection("transactions")
+    .where("uid", "==", uid)
+    .get();
+
+  const transacoes = transacoesSnap.docs.map(doc => doc.data());
+  const userData = userDoc.data();
+
   const prompt = `
-  Usuário possui:
-  Saldo: ${userData.saldo}
-  Investimentos: ${JSON.stringify(userData.investimentos)}
+  Analise os dados financeiros:
 
-  Dê recomendações financeiras inteligentes.
+  Saldo: ${userData.saldo}
+
+  Investimentos:
+  ${JSON.stringify(userData.investimentos)}
+
+  Transações:
+  ${JSON.stringify(transacoes.slice(0, 20))}
+
+  Gere:
+  - análise financeira
+  - sugestões
+  - riscos
+  - melhorias
   `;
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4.1",
-    messages: [{ role: "user", content: prompt }]
-  });
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+      contents: [
+        {
+          parts: [{ text: prompt }]
+        }
+      ]
+    }
+  );
 
-  return response.choices[0].message.content;
+  return response.data.candidates[0].content.parts[0].text;
 }
 
-module.exports = { gerarRecomendacao };
+module.exports = { analisarUsuario };
