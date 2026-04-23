@@ -15,15 +15,3 @@ async function getCryptoPrice(symbol) {
 }
 
 module.exports = { getCryptoPrice };
-
-app.get("/preco/cripto/:symbol", async (req, res) => {
-  try {
-    const { getCryptoPrice } = require("./services/market");
-
-    const price = await getCryptoPrice(req.params.symbol);
-
-    res.json({ price });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro preço" });
-  }
-});
