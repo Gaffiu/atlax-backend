@@ -292,6 +292,13 @@ app.post("/webhook/mp", async (req, res) => {
   });
 });
 
+  await criarTransacao({
+  uid,
+  tipo: "deposito",
+  valor,
+  status: "aprovado"
+});    
+
       console.log("💰 Depósito aprovado:", valor);
     }
 
@@ -335,6 +342,13 @@ app.post("/saque", async (req, res) => {
       criadoEm: new Date()
     });
 
+    await criarTransacao({
+  uid,
+  tipo: "saque",
+  valor,
+  status: "pendente"
+});
+
     res.json({ ok: true });
 
   } catch (err) {
@@ -370,6 +384,14 @@ app.post("/investir", async (req, res) => {
     await db.runTransaction(async (t) => {
       const doc = await t.get(ref);
 
+      await criarTransacao({
+  uid,
+  tipo: "investimento",
+  valor,
+  status: "executado",
+  categoria: tipo
+});
+
       if (!doc.exists) {
         throw new Error("Usuário não encontrado");
       }
@@ -391,6 +413,24 @@ app.post("/investir", async (req, res) => {
   } catch (err) {
     console.error("❌ Erro investir:", err);
     res.status(400).json({ erro: err.message });
+  }
+});
+
+app.get("/extrato/:uid", async (req, res) => {
+  try {
+    const snapshot = await db
+      .collection("transactions")
+      .where("uid", "==", req.params.uid)
+      .orderBy("criadoEm", "desc")
+      .get();
+
+    const lista = snapshot.docs.map(doc => doc.data());
+
+    res.json(lista);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: "Erro ao buscar extrato" });
   }
 });
 
