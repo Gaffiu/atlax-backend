@@ -317,31 +317,11 @@ app.post("/investir", async (req, res) => {
     const { uid, tipo, valor } = req.body;
 
     const TIPOS_VALIDOS = [
-      "cdb",
-      "tesouroDireto",
-      "lci",
-      "lca",
-      "debentures",
-      "fundosImobiliarios",
-      "acoes",
-      "etfs",
-      "cripto",
-      "staking",
-      "rendaFixa",
-      "rendaVariavel",
-      "previdenciaPrivada",
-      "fundosMultimercado",
-      "fundosCambiais",
-      "ouro",
-      "dolar",
-      "euro",
-      "commodities",
-      "startups",
-      "crowdfunding",
-      "nft",
-      "metaverso",
-      "arbitragem",
-      "robosTrading"
+      "cdb","tesouroDireto","lci","lca","debentures","fundosImobiliarios",
+      "acoes","etfs","cripto","staking","rendaFixa","rendaVariavel",
+      "previdenciaPrivada","fundosMultimercado","fundosCambiais",
+      "ouro","dolar","euro","commodities","startups","crowdfunding",
+      "nft","metaverso","arbitragem","robosTrading"
     ];
 
     if (!uid || !tipo || !valor || valor <= 0) {
@@ -349,41 +329,36 @@ app.post("/investir", async (req, res) => {
     }
 
     if (!TIPOS_VALIDOS.includes(tipo)) {
-      return res.status(400).json({ erro: "Tipo de investimento inválido" });
+      return res.status(400).json({ erro: "Tipo inválido" });
     }
 
     const ref = db.collection("users").doc(uid);
-    const doc = await ref.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ erro: "Usuário não encontrado" });
-    }
 
     await db.runTransaction(async (t) => {
-  const doc = await t.get(ref);
+      const doc = await t.get(ref);
 
-  if (!doc.exists) {
-    throw new Error("Usuário não encontrado");
+      if (!doc.exists) {
+        throw new Error("Usuário não encontrado");
+      }
+
+      const saldoAtual = doc.data().saldo || 0;
+
+      if (valor > saldoAtual) {
+        throw new Error("Saldo insuficiente");
+      }
+
+      t.update(ref, {
+        [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
+        saldo: admin.firestore.FieldValue.increment(-Number(valor))
+      });
+    });
+
+    res.send({ ok: true });
+
+  } catch (err) {
+    console.error("❌ Erro investir:", err);
+    res.status(400).json({ erro: err.message });
   }
-
-  const saldoAtual = doc.data().saldo || 0;
-
-  if (valor > saldoAtual) {
-    throw new Error("Saldo insuficiente");
-  }
-
-  t.update(ref, {
-    [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
-    saldo: admin.firestore.FieldValue.increment(-Number(valor))
-  });
-});
-
-    try {
-  await db.runTransaction(...);
-  res.send({ ok: true });
-} catch (err) {
-  return res.status(400).json({ erro: err.message });
-}
 });
 
 // 🚀 START (CORRETO PRO RENDER)
