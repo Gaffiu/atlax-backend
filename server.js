@@ -14,7 +14,7 @@ process.on("unhandledRejection", (err) => {
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const db = require("./firebase");
+const { db, admin } = require("./firebase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 
 // 🔥 APP
