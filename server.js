@@ -71,6 +71,19 @@ app.get("/", (req, res) => {
   res.status(200).send("API Atlax rodando 🚀");
 });
 
+app.get("/ai/recomendacao", authMiddleware, async (req, res) => {
+  const uid = req.user.uid;
+
+  const doc = await db.collection("users").doc(uid).get();
+
+  const { gerarRecomendacao } = require("./services/ai");
+
+  const resposta = await gerarRecomendacao(doc.data());
+
+  res.json({ resposta });
+});
+
+
 app.get("/preco/cripto/:symbol", async (req, res) => {
   try {
     const { getCryptoPrice } = require("./services/market");
