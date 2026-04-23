@@ -47,4 +47,7 @@ if (serviceAccount) {
   };
 }
 
-module.exports = db;
+module.exports = {
+  db,
+  admin
+};
