@@ -106,39 +106,7 @@ app.post("/criar-usuario", async (req, res) => {
     if (!doc.exists) {
       await ref.set({
   saldo: 0,
-
-  const TIPOS_VALIDOS = [
-  "cdb",
-  "tesouroDireto",
-  "lci",
-  "lca",
-  "debentures",
-  "fundosImobiliarios",
-  "acoes",
-  "etfs",
-  "cripto",
-  "staking",
-  "rendaFixa",
-  "rendaVariavel",
-  "previdenciaPrivada",
-  "fundosMultimercado",
-  "fundosCambiais",
-  "ouro",
-  "dolar",
-  "euro",
-  "commodities",
-  "startups",
-  "crowdfunding",
-  "nft",
-  "metaverso",
-  "arbitragem",
-  "robosTrading"
-];
-      
-  if (!TIPOS_VALIDOS.includes(tipo)) {
-  return res.status(400).json({ erro: "Tipo de investimento inválido" });
-}
-
+        
   criadoEm: new Date()
 });
 
@@ -321,6 +289,38 @@ app.post("/investir", async (req, res) => {
     res.status(500).json({ erro: "Erro interno" });
   }
 });
+
+const TIPOS_VALIDOS = [
+  "cdb",
+  "tesouroDireto",
+  "lci",
+  "lca",
+  "debentures",
+  "fundosImobiliarios",
+  "acoes",
+  "etfs",
+  "cripto",
+  "staking",
+  "rendaFixa",
+  "rendaVariavel",
+  "previdenciaPrivada",
+  "fundosMultimercado",
+  "fundosCambiais",
+  "ouro",
+  "dolar",
+  "euro",
+  "commodities",
+  "startups",
+  "crowdfunding",
+  "nft",
+  "metaverso",
+  "arbitragem",
+  "robosTrading"
+];
+
+if (!TIPOS_VALIDOS.includes(tipo)) {
+  return res.status(400).json({ erro: "Tipo de investimento inválido" });
+}
 
 // 🚀 START (CORRETO PRO RENDER)
 const PORT = process.env.PORT;
