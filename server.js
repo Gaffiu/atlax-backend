@@ -22,6 +22,29 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.post("/ia", async (req, res) => {
+  try {
+    const { mensagem } = req.body;
+
+    if (!mensagem) {
+      return res.status(400).json({
+        resposta: "Mensagem não enviada"
+      });
+    }
+
+    // resposta simples (teste)
+    res.json({
+      resposta: "Você disse: " + mensagem
+    });
+
+  } catch (err) {
+    console.error("Erro na IA:", err);
+    res.status(500).json({
+      resposta: "Erro interno"
+    });
+  }
+});
+
 // 🔥 ENV
 const {
   MP_TOKEN,
