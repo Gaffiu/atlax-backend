@@ -95,7 +95,7 @@ app.get("/connect", async (req, res) => {
 // 🔥 CRIAR USUÁRIO
 app.post("/criar-usuario", async (req, res) => {
   try {
-    const { uid } = req.body;
+    const uid = req.user.uid;
 
     if (!uid) {
       return res.status(400).json({ erro: "UID obrigatório" });
@@ -200,7 +200,7 @@ app.post("/deposito", async (req, res) => {
       return res.status(500).json({ erro: "Mercado Pago não configurado" });
     }
 
-    const { valor, uid } = req.body;
+    const uid = req.user.uid;
 
     if (!valor || valor <= 0) {
       return res.status(400).json({ erro: "Valor inválido" });
