@@ -1,7 +1,7 @@
 // 🔥 LOG INICIAL
 console.log("🔥 Iniciando servidor...");
 
-// 🔥 TRATAMENTO DE ERROS GLOBAIS
+// 🔥 ERROS GLOBAIS
 process.on("uncaughtException", (err) => {
   console.error("💥 Erro não tratado:", err);
 });
@@ -11,8 +11,6 @@ process.on("unhandledRejection", (err) => {
 });
 
 // 🔥 IMPORTS
-const { criarTransacao } = require("./services/transactions");
-const authMiddleware = require("./middlewares/auth");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
@@ -24,19 +22,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔥 ENV CHECK
+// 🔥 ENV
 const {
   MP_TOKEN,
   PLUGGY_CLIENT_ID,
   PLUGGY_CLIENT_SECRET
 } = process.env;
 
-if (!MP_TOKEN) {
-  console.error("❌ MP_TOKEN NÃO DEFINIDO");
-}
-
+// 🔥 VALIDAÇÃO ENV
+if (!MP_TOKEN) console.error("❌ MP_TOKEN NÃO DEFINIDO");
 if (!PLUGGY_CLIENT_ID || !PLUGGY_CLIENT_SECRET) {
   console.error("❌ PLUGGY NÃO CONFIGURADO");
+}
+
+// 🔐 AUTH MIDDLEWARE (SEM QUEBRAR FRONT)
+async function auth(req, res, next) {
+  try {
+    const token = req.headers.authorization?.split("Bearer ")[1];
+
+    if (!token) return next(); // 🔥 mantém compatibilidade
+
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
+
+    next();
+  } catch (err) {
+    console.error("❌ Auth erro:", err.message);
+    return res.status(401).json({ erro: "Token inválido" });
+  }
 }
 
 // 🔥 MERCADO PAGO
@@ -67,34 +80,9 @@ async function autenticarPluggy() {
   }
 }
 
-// 🔥 HEALTH CHECK (IMPORTANTE PRO RENDER)
+// 🔥 HEALTH
 app.get("/", (req, res) => {
   res.status(200).send("API Atlax rodando 🚀");
-});
-
-app.get("/ai/recomendacao", authMiddleware, async (req, res) => {
-  const uid = req.user.uid;
-
-  const doc = await db.collection("users").doc(uid).get();
-
-  const { gerarRecomendacao } = require("./services/ai");
-
-  const resposta = await gerarRecomendacao(doc.data());
-
-  res.json({ resposta });
-});
-
-
-app.get("/preco/cripto/:symbol", async (req, res) => {
-  try {
-    const { getCryptoPrice } = require("./services/market");
-
-    const price = await getCryptoPrice(req.params.symbol);
-
-    res.json({ price });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro preço" });
-  }
 });
 
 // 🔥 CONNECT
@@ -119,9 +107,9 @@ app.get("/connect", async (req, res) => {
 });
 
 // 🔥 CRIAR USUÁRIO
-app.post("/criar-usuario", async (req, res) => {
+app.post("/criar-usuario", auth, async (req, res) => {
   try {
-    const uid = req.user.uid;
+    const uid = req.user?.uid || req.body.uid;
 
     if (!uid) {
       return res.status(400).json({ erro: "UID obrigatório" });
@@ -132,66 +120,41 @@ app.post("/criar-usuario", async (req, res) => {
 
     if (!doc.exists) {
       await ref.set({
-  saldo: 0,
+        saldo: 0,
 
-  investimentos: {
-    cdb: 0,
-    tesouroDireto: 0,
-    lci: 0,
-    lca: 0,
-    debentures: 0,
-    fundosImobiliarios: 0,
-    acoes: 0,
-    etfs: 0,
-    cripto: 0,
-    staking: 0,
-    rendaFixa: 0,
-    rendaVariavel: 0,
-    previdenciaPrivada: 0,
-    fundosMultimercado: 0,
-    fundosCambiais: 0,
-    ouro: 0,
-    dolar: 0,
-    euro: 0,
-    commodities: 0,
-    startups: 0,
-    crowdfunding: 0,
-    nft: 0,
-    metaverso: 0,
-    arbitragem: 0,
-    robosTrading: 0
-  },
+        investimentos: {
+          cdb: 0,
+          tesouroDireto: 0,
+          lci: 0,
+          lca: 0,
+          debentures: 0,
+          fundosImobiliarios: 0,
+          acoes: 0,
+          etfs: 0,
+          cripto: 0,
+          staking: 0,
+          rendaFixa: 0,
+          rendaVariavel: 0,
+          previdenciaPrivada: 0,
+          fundosMultimercado: 0,
+          fundosCambiais: 0,
+          ouro: 0,
+          dolar: 0,
+          euro: 0,
+          commodities: 0,
+          startups: 0,
+          crowdfunding: 0,
+          nft: 0,
+          metaverso: 0,
+          arbitragem: 0,
+          robosTrading: 0
+        },
 
-  rendimento: {
-    cdb: 0,
-    tesouroDireto: 0,
-    lci: 0,
-    lca: 0,
-    debentures: 0,
-    fundosImobiliarios: 0,
-    acoes: 0,
-    etfs: 0,
-    cripto: 0,
-    staking: 0,
-    rendaFixa: 0,
-    rendaVariavel: 0,
-    previdenciaPrivada: 0,
-    fundosMultimercado: 0,
-    fundosCambiais: 0,
-    ouro: 0,
-    dolar: 0,
-    euro: 0,
-    commodities: 0,
-    startups: 0,
-    crowdfunding: 0,
-    nft: 0,
-    metaverso: 0,
-    arbitragem: 0,
-    robosTrading: 0
-  },
+        rendimento: {},
 
-  criadoEm: new Date()
-});
+        criadoEm: new Date()
+      });
+    }
 
     res.json({ ok: true });
 
@@ -208,8 +171,7 @@ app.get("/saldo/:uid", async (req, res) => {
 
     if (!doc.exists) return res.json({ saldo: 0 });
 
-    const saldo = doc.data()?.saldo ?? 0;
-res.json({ saldo });
+    res.json({ saldo: doc.data()?.saldo ?? 0 });
 
   } catch (err) {
     console.error("❌ Erro saldo:", err);
@@ -217,16 +179,33 @@ res.json({ saldo });
   }
 });
 
-// 🔥 GERAR PIX
+// 🔥 EXTRATO
+app.get("/extrato/:uid", async (req, res) => {
+  try {
+    const snapshot = await db
+      .collection("transactions")
+      .where("uid", "==", req.params.uid)
+      .orderBy("criadoEm", "desc")
+      .get();
+
+    const lista = snapshot.docs.map(doc => doc.data());
+
+    res.json(lista);
+
+  } catch (err) {
+    console.error("❌ Extrato erro:", err);
+    res.status(500).json({ erro: "Erro ao buscar extrato" });
+  }
+});
+
+// 🔥 DEPÓSITO
 app.post("/deposito", async (req, res) => {
   try {
-    console.log("📦 Depósito recebido:", req.body);
-
     if (!payment) {
       return res.status(500).json({ erro: "Mercado Pago não configurado" });
     }
 
-    const uid = req.user.uid;
+    const { valor, uid } = req.body;
 
     if (!valor || valor <= 0) {
       return res.status(400).json({ erro: "Valor inválido" });
@@ -236,12 +215,8 @@ app.post("/deposito", async (req, res) => {
       body: {
         transaction_amount: Number(valor),
         payment_method_id: "pix",
-        payer: {
-          email: "cliente@atlax.com"
-        },
-        metadata: {
-          uid
-        }
+        payer: { email: "cliente@atlax.com" },
+        metadata: { uid }
       }
     });
 
@@ -259,16 +234,12 @@ app.post("/deposito", async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK MERCADO PAGO
+// 🔥 WEBHOOK MP
 app.post("/webhook/mp", async (req, res) => {
   try {
-    console.log("📩 Webhook recebido:", req.body);
-
-    if (!payment) return res.sendStatus(200);
-
     const paymentId = req.body?.data?.id;
 
-    if (!paymentId) return res.sendStatus(200);
+    if (!paymentId || !payment) return res.sendStatus(200);
 
     const pagamento = await payment.get({ id: paymentId });
 
@@ -277,27 +248,19 @@ app.post("/webhook/mp", async (req, res) => {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
 
-      if (!uid) return res.sendStatus(200);
-
       const ref = db.collection("users").doc(uid);
-      const doc = await ref.get();
 
-      await db.runTransaction(async (t) => {
-  const doc = await t.get(ref);
+      await ref.update({
+        saldo: admin.firestore.FieldValue.increment(Number(valor))
+      });
 
-  if (!doc.exists) return;
-
-  t.update(ref, {
-    saldo: admin.firestore.FieldValue.increment(Number(valor))
-  });
-});
-
-  await criarTransacao({
-  uid,
-  tipo: "deposito",
-  valor,
-  status: "aprovado"
-});    
+      await db.collection("transactions").add({
+        uid,
+        tipo: "deposito",
+        valor,
+        status: "aprovado",
+        criadoEm: new Date()
+      });
 
       console.log("💰 Depósito aprovado:", valor);
     }
@@ -315,16 +278,8 @@ app.post("/saque", async (req, res) => {
   try {
     const { uid, valor, pix } = req.body;
 
-    if (!uid || !valor || !pix) {
-      return res.status(400).json({ erro: "Dados inválidos" });
-    }
-
     const ref = db.collection("users").doc(uid);
     const doc = await ref.get();
-
-    if (!doc.exists) {
-      return res.status(400).json({ erro: "Usuário não existe" });
-    }
 
     const saldo = doc.data().saldo;
 
@@ -332,22 +287,17 @@ app.post("/saque", async (req, res) => {
       return res.status(400).json({ erro: "Saldo insuficiente" });
     }
 
-    await ref.update({ saldo: saldo - valor });
+    await ref.update({
+      saldo: admin.firestore.FieldValue.increment(-Number(valor))
+    });
 
-    await db.collection("saques").add({
+    await db.collection("transactions").add({
       uid,
+      tipo: "saque",
       valor,
-      pix,
       status: "pendente",
       criadoEm: new Date()
     });
-
-    await criarTransacao({
-  uid,
-  tipo: "saque",
-  valor,
-  status: "pendente"
-});
 
     res.json({ ok: true });
 
@@ -357,6 +307,7 @@ app.post("/saque", async (req, res) => {
   }
 });
 
+// 🔥 INVESTIR (CORRIGIDO)
 app.post("/investir", async (req, res) => {
   try {
     const { uid, tipo, valor } = req.body;
@@ -384,18 +335,6 @@ app.post("/investir", async (req, res) => {
     await db.runTransaction(async (t) => {
       const doc = await t.get(ref);
 
-      await criarTransacao({
-  uid,
-  tipo: "investimento",
-  valor,
-  status: "executado",
-  categoria: tipo
-});
-
-      if (!doc.exists) {
-        throw new Error("Usuário não encontrado");
-      }
-
       const saldoAtual = doc.data().saldo || 0;
 
       if (valor > saldoAtual) {
@@ -408,6 +347,14 @@ app.post("/investir", async (req, res) => {
       });
     });
 
+    await db.collection("transactions").add({
+      uid,
+      tipo: "investimento",
+      categoria: tipo,
+      valor,
+      criadoEm: new Date()
+    });
+
     res.json({ ok: true });
 
   } catch (err) {
@@ -416,25 +363,7 @@ app.post("/investir", async (req, res) => {
   }
 });
 
-app.get("/extrato/:uid", async (req, res) => {
-  try {
-    const snapshot = await db
-      .collection("transactions")
-      .where("uid", "==", req.params.uid)
-      .orderBy("criadoEm", "desc")
-      .get();
-
-    const lista = snapshot.docs.map(doc => doc.data());
-
-    res.json(lista);
-
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: "Erro ao buscar extrato" });
-  }
-});
-
-// 🚀 START (CORRETO PRO RENDER)
+// 🚀 START
 const PORT = process.env.PORT;
 
 if (!PORT) {
