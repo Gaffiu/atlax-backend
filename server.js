@@ -256,10 +256,14 @@ app.post("/webhook/mp", async (req, res) => {
       const ref = db.collection("users").doc(uid);
       const doc = await ref.get();
 
-      const saldoAtual = doc.data()?.saldo || 0;
+      await db.runTransaction(async (t) => {
+  const doc = await t.get(ref);
 
-      await ref.update({
-  saldo: admin.firestore.FieldValue.increment(Number(valor))
+  if (!doc.exists) return;
+
+  t.update(ref, {
+    saldo: admin.firestore.FieldValue.increment(Number(valor))
+  });
 });
 
       console.log("💰 Depósito aprovado:", valor);
