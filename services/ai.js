@@ -22,15 +22,3 @@ async function gerarRecomendacao(userData) {
 }
 
 module.exports = { gerarRecomendacao };
-
-app.get("/ai/recomendacao", authMiddleware, async (req, res) => {
-  const uid = req.user.uid;
-
-  const doc = await db.collection("users").doc(uid).get();
-
-  const { gerarRecomendacao } = require("./services/ai");
-
-  const resposta = await gerarRecomendacao(doc.data());
-
-  res.json({ resposta });
-});
