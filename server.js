@@ -359,16 +359,24 @@ app.post("/investir", async (req, res) => {
       return res.status(404).json({ erro: "Usuário não encontrado" });
     }
 
-    const saldoAtual = doc.data().saldo || 0;
+    await db.runTransaction(async (t) => {
+  const doc = await t.get(ref);
 
-    if (valor > saldoAtual) {
-      return res.status(400).json({ erro: "Saldo insuficiente" });
-    }
+  if (!doc.exists) {
+    throw new Error("Usuário não encontrado");
+  }
 
-    await ref.update({
-      [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
-      saldo: admin.firestore.FieldValue.increment(-Number(valor))
-    });
+  const saldoAtual = doc.data().saldo || 0;
+
+  if (valor > saldoAtual) {
+    throw new Error("Saldo insuficiente");
+  }
+
+  t.update(ref, {
+    [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
+    saldo: admin.firestore.FieldValue.increment(-Number(valor))
+  });
+});
 
     res.send({ ok: true });
 
