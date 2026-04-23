@@ -378,12 +378,12 @@ app.post("/investir", async (req, res) => {
   });
 });
 
-    res.send({ ok: true });
-
-  } catch (err) {
-    console.error("❌ Erro investir:", err);
-    res.status(500).json({ erro: "Erro interno" });
-  }
+    try {
+  await db.runTransaction(...);
+  res.send({ ok: true });
+} catch (err) {
+  return res.status(400).json({ erro: err.message });
+}
 });
 
 // 🚀 START (CORRETO PRO RENDER)
