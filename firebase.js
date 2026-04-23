@@ -13,7 +13,7 @@ if (fs.existsSync(keyPath)) {
   try {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   } catch (e) {
-    console.warn("⚠️  FIREBASE_SERVICE_ACCOUNT env var is not valid JSON.");
+    console.warn("⚠️ FIREBASE_SERVICE_ACCOUNT inválido");
   }
 }
 
@@ -21,18 +21,14 @@ if (serviceAccount) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
+
   db = admin.firestore();
   console.log("🔥 Firebase initialized");
 } else {
-  console.warn(
-    "⚠️  No Firebase credentials found (serviceAccountKey.json or FIREBASE_SERVICE_ACCOUNT). " +
-      "Firestore-dependent endpoints will return 503."
-  );
+  console.warn("⚠️ Firebase não configurado");
 
   const notConfigured = () => {
-    const err = new Error("Firebase not configured");
-    err.code = "FIREBASE_NOT_CONFIGURED";
-    throw err;
+    throw new Error("Firebase not configured");
   };
 
   db = {
