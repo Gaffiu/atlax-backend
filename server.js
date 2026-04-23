@@ -106,7 +106,63 @@ app.post("/criar-usuario", async (req, res) => {
     if (!doc.exists) {
       await ref.set({
   saldo: 0,
-        
+
+  investimentos: {
+    cdb: 0,
+    tesouroDireto: 0,
+    lci: 0,
+    lca: 0,
+    debentures: 0,
+    fundosImobiliarios: 0,
+    acoes: 0,
+    etfs: 0,
+    cripto: 0,
+    staking: 0,
+    rendaFixa: 0,
+    rendaVariavel: 0,
+    previdenciaPrivada: 0,
+    fundosMultimercado: 0,
+    fundosCambiais: 0,
+    ouro: 0,
+    dolar: 0,
+    euro: 0,
+    commodities: 0,
+    startups: 0,
+    crowdfunding: 0,
+    nft: 0,
+    metaverso: 0,
+    arbitragem: 0,
+    robosTrading: 0
+  },
+
+  rendimento: {
+    cdb: 0,
+    tesouroDireto: 0,
+    lci: 0,
+    lca: 0,
+    debentures: 0,
+    fundosImobiliarios: 0,
+    acoes: 0,
+    etfs: 0,
+    cripto: 0,
+    staking: 0,
+    rendaFixa: 0,
+    rendaVariavel: 0,
+    previdenciaPrivada: 0,
+    fundosMultimercado: 0,
+    fundosCambiais: 0,
+    ouro: 0,
+    dolar: 0,
+    euro: 0,
+    commodities: 0,
+    startups: 0,
+    crowdfunding: 0,
+    nft: 0,
+    metaverso: 0,
+    arbitragem: 0,
+    robosTrading: 0
+  },
+
   criadoEm: new Date()
 });
 
