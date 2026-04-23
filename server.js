@@ -1,4 +1,4 @@
-// 🔥 LOG INICIAL
+// 🔥 LOG INICIA
 console.log("🔥 Iniciando servidor...");
 
 // 🔥 ERROS GLOBAIS
