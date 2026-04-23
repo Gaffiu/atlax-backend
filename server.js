@@ -181,7 +181,8 @@ app.get("/saldo/:uid", async (req, res) => {
 
     if (!doc.exists) return res.json({ saldo: 0 });
 
-    res.json({ saldo: doc.data().saldo });
+    const saldo = doc.data()?.saldo ?? 0;
+res.json({ saldo });
 
   } catch (err) {
     console.error("❌ Erro saldo:", err);
