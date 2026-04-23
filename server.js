@@ -317,11 +317,13 @@ app.post("/investir", async (req, res) => {
     const { uid, tipo, valor } = req.body;
 
     const TIPOS_VALIDOS = [
-      "cdb","tesouroDireto","lci","lca","debentures","fundosImobiliarios",
-      "acoes","etfs","cripto","staking","rendaFixa","rendaVariavel",
-      "previdenciaPrivada","fundosMultimercado","fundosCambiais",
-      "ouro","dolar","euro","commodities","startups","crowdfunding",
-      "nft","metaverso","arbitragem","robosTrading"
+      "cdb", "tesouroDireto", "lci", "lca", "debentures",
+      "fundosImobiliarios", "acoes", "etfs", "cripto",
+      "staking", "rendaFixa", "rendaVariavel",
+      "previdenciaPrivada", "fundosMultimercado",
+      "fundosCambiais", "ouro", "dolar", "euro",
+      "commodities", "startups", "crowdfunding",
+      "nft", "metaverso", "arbitragem", "robosTrading"
     ];
 
     if (!uid || !tipo || !valor || valor <= 0) {
@@ -353,7 +355,7 @@ app.post("/investir", async (req, res) => {
       });
     });
 
-    res.send({ ok: true });
+    res.json({ ok: true });
 
   } catch (err) {
     console.error("❌ Erro investir:", err);
