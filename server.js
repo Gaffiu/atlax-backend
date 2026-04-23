@@ -313,16 +313,37 @@ app.post("/saque", async (req, res) => {
 });
 
 app.post("/investir", async (req, res) => {
-  const { uid, tipo, valor } = req.body;
+  try {
+    const { uid, tipo, valor } = req.body;
 
-  const ref = db.collection("users").doc(uid);
+    if (!uid || !tipo || !valor || valor <= 0) {
+      return res.status(400).json({ erro: "Dados inválidos" });
+    }
 
-  await ref.update({
-    [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
-    saldo: admin.firestore.FieldValue.increment(-Number(valor))
-  });
+    const ref = db.collection("users").doc(uid);
+    const doc = await ref.get();
 
-  res.send({ ok: true });
+    if (!doc.exists) {
+      return res.status(404).json({ erro: "Usuário não encontrado" });
+    }
+
+    const saldoAtual = doc.data().saldo || 0;
+
+    if (valor > saldoAtual) {
+      return res.status(400).json({ erro: "Saldo insuficiente" });
+    }
+
+    await ref.update({
+      [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
+      saldo: admin.firestore.FieldValue.increment(-Number(valor))
+    });
+
+    res.send({ ok: true });
+
+  } catch (err) {
+    console.error("❌ Erro investir:", err);
+    res.status(500).json({ erro: "Erro interno" });
+  }
 });
 
 // 🚀 START (CORRETO PRO RENDER)
