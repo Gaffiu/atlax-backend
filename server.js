@@ -11,6 +11,7 @@ process.on("unhandledRejection", (err) => {
 });
 
 // 🔥 IMPORTS
+const authMiddleware = require("./middlewares/auth");
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
