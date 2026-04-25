@@ -24,8 +24,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 AUTH MIDDLEWARE (aplicado seletivamente nas rotas)
-
 // 🔥 ENV
 const {
   MP_TOKEN,
@@ -44,6 +42,7 @@ let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
   payment = new Payment(client);
+  console.log("💳 Mercado Pago configurado");
 }
 
 // 🔥 PLUGGY
@@ -104,7 +103,6 @@ app.get("/transacoes/:itemId", authMiddleware, async (req, res) => {
 app.post("/webhook/pluggy", async (req, res) => {
   try {
     console.log("📥 Webhook Pluggy recebido:", req.body);
-    // Processar atualizações automáticas de transações se necessário
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ Erro webhook Pluggy:", err);
@@ -144,7 +142,6 @@ app.post("/criar-usuario", authMiddleware, async (req, res) => {
 // 🔥 SALDO
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
-    // Verifica se o uid do token corresponde ao solicitado
     if (req.user.uid !== req.params.uid) {
       return res.status(403).json({ erro: "Não autorizado" });
     }
@@ -182,6 +179,9 @@ app.post("/deposito", authMiddleware, async (req, res) => {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
     const { valor } = req.body;
     if (!valor || valor <= 0) return res.status(400).json({ erro: "Valor inválido" });
+    
+    console.log(`💰 Criando pagamento de R$ ${valor} para ${req.user.uid}`);
+    
     const pagamento = await payment.create({
       body: {
         transaction_amount: Number(valor),
@@ -190,11 +190,15 @@ app.post("/deposito", authMiddleware, async (req, res) => {
         metadata: { uid: req.user.uid }
       }
     });
+
     const qr = pagamento.point_of_interaction.transaction_data;
+    console.log(`📊 Pagamento criado: ${pagamento.id} - Status: ${pagamento.status}`);
+    
     res.json({
       id: pagamento.id,
       qr_img: qr.qr_code_base64,
-      copia_cola: qr.qr_code
+      copia_cola: qr.qr_code,
+      status: pagamento.status
     });
   } catch (err) {
     console.error("❌ Erro MP:", err.response?.data || err.message);
@@ -202,12 +206,16 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR STATUS DO PAGAMENTO (POLLING)
+// 🔥 VERIFICAR STATUS DO PAGAMENTO
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
     const { id } = req.params;
+    console.log(`🔍 Verificando pagamento ${id}...`);
+    
     const pagamento = await payment.get({ id });
+    console.log(`📊 Status do pagamento ${id}: ${pagamento.status}`);
+    
     res.json({
       id: pagamento.id,
       status: pagamento.status,
@@ -222,16 +230,22 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 // 🔥 WEBHOOK MP
 app.post("/webhook/mp", async (req, res) => {
   try {
+    console.log("📥 Webhook MP recebido:", req.body);
     const paymentId = req.body?.data?.id;
     if (!paymentId || !payment) return res.sendStatus(200);
+    
     const pagamento = await payment.get({ id: paymentId });
+    console.log(`📊 Webhook status: ${pagamento.status}`);
+    
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
       const ref = db.collection("users").doc(uid);
+      
       await ref.update({
         saldo: admin.firestore.FieldValue.increment(Number(valor))
       });
+      
       await db.collection("transactions").add({
         uid,
         tipo: "deposito",
@@ -239,7 +253,8 @@ app.post("/webhook/mp", async (req, res) => {
         status: "aprovado",
         criadoEm: new Date()
       });
-      console.log("💰 Depósito aprovado:", valor);
+      
+      console.log("💰 Depósito aprovado via webhook:", valor);
     }
     res.sendStatus(200);
   } catch (e) {
@@ -274,13 +289,12 @@ app.post("/saque", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 INVESTIR (com mapeamento de tipos)
+// 🔥 INVESTIR
 app.post("/investir", authMiddleware, async (req, res) => {
   try {
     const { tipo, valor } = req.body;
     const uid = req.user.uid;
 
-    // Mapear nomes amigáveis para categorias do banco
     const mapaTipos = {
       "Tesouro Selic": "tesouroDireto",
       "CDB": "cdb",
@@ -293,7 +307,6 @@ app.post("/investir", authMiddleware, async (req, res) => {
       "Ethereum": "cripto",
       "Fundos Imobiliários (FIIs)": "fundosImobiliarios",
       "Staking": "staking",
-      // Adicione mais conforme necessário
     };
 
     const tipoBanco = mapaTipos[tipo] || tipo.toLowerCase().replace(/\s/g, "");
@@ -342,13 +355,12 @@ app.post("/investir", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 IA COM GEMINI (ATUALIZADA)
+// 🔥 IA COM GEMINI
 app.post("/ia", authMiddleware, async (req, res) => {
   try {
     const { mensagem } = req.body;
     const uid = req.user?.uid;
 
-    // Se pedir análise da carteira, chama o Gemini
     if (mensagem && (mensagem.toLowerCase().includes("analise") || mensagem.toLowerCase().includes("carteira"))) {
       if (!uid) return res.json({ resposta: "Faça login para analisar sua carteira." });
       try {
@@ -356,11 +368,10 @@ app.post("/ia", authMiddleware, async (req, res) => {
         return res.json({ resposta: analise });
       } catch (err) {
         console.error("Erro na análise:", err);
-        return res.json({ resposta: "Não consegui analisar sua carteira agora. Verifique se seus dados estão atualizados." });
+        return res.json({ resposta: "Não consegui analisar sua carteira agora." });
       }
     }
 
-    // Para perguntas gerais (Oráculo, etc.), também podemos usar o Gemini com um prompt poético
     if (GEMINI_API_KEY) {
       try {
         const response = await axios.post(
@@ -376,7 +387,6 @@ app.post("/ia", authMiddleware, async (req, res) => {
       }
     }
 
-    // Fallback sem IA
     res.json({
       resposta: "Estou refinando meus conhecimentos. Em breve darei respostas mais sábias!"
     });
