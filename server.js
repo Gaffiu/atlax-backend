@@ -6,19 +6,20 @@ process.on("unhandledRejection", (err) => console.error("💥 Promise rejeitada:
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { db, admin } = require("./firebase");
+const { db, admin, firebasePronto } = require("./firebase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
-const { analisarUsuario } = require("./services/ai");
 const authMiddleware = require("./middleware/auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const { MP_TOKEN, PLUGGY_CLIENT_ID, PLUGGY_CLIENT_SECRET, GEMINI_API_KEY } = process.env;
+console.log("📌 Firebase pronto:", firebasePronto);
 
-if (!MP_TOKEN) console.warn("⚠️ MP_TOKEN não definido");
-if (!PLUGGY_CLIENT_ID || !PLUGGY_CLIENT_SECRET) console.warn("⚠️ Pluggy não configurado");
+const { MP_TOKEN, PLUGGY_CLIENT_ID, PLUGGY_CLIENT_SECRET } = process.env;
+
+console.log("MP_TOKEN:", MP_TOKEN ? "✅" : "❌");
+console.log("PLUGGY_CLIENT_ID:", PLUGGY_CLIENT_ID ? "✅" : "❌");
 
 let payment = null;
 if (MP_TOKEN) {
@@ -27,93 +28,37 @@ if (MP_TOKEN) {
   console.log("💳 Mercado Pago configurado");
 }
 
-let apiKey = null;
-async function autenticarPluggy() {
-  try {
-    const res = await axios.post("https://api.pluggy.ai/auth", {
-      clientId: PLUGGY_CLIENT_ID,
-      clientSecret: PLUGGY_CLIENT_SECRET
-    });
-    apiKey = res.data.apiKey;
-    console.log("🔑 Pluggy autenticado");
-  } catch (err) {
-    console.error("❌ Erro Pluggy:", err.response?.data || err.message);
+// Função que cria o usuário SE NÃO EXISTIR
+async function garantirUsuario(uid) {
+  if (!firebasePronto) {
+    console.error("❌ Firebase não configurado. Não foi possível garantir usuário.");
+    return null;
   }
-}
-
-// 🔧 Função que garante que o documento do usuário existe (CORREÇÃO)
-async function garantirDocumentoUsuario(uid) {
-  const userRef = db.collection("users").doc(uid);
-  const userDoc = await userRef.get();
-  if (!userDoc.exists) {
+  const ref = db.collection("users").doc(uid);
+  const doc = await ref.get();
+  if (!doc.exists) {
     console.log(`📄 Criando documento para ${uid}`);
-    await userRef.set({
-      saldo: 0,
-      investimentos: {},
-      criadoEm: new Date()
-    });
+    await ref.set({ saldo: 0, investimentos: {}, criadoEm: new Date() });
   }
-  return userRef;
+  return ref;
 }
 
-// ==================== ROTAS ====================
+// ===== ROTAS =====
 
-app.get("/", (req, res) => res.status(200).send("API Atlax rodando 🚀"));
-
-app.get("/connect", async (req, res) => {
-  try {
-    if (!apiKey) await autenticarPluggy();
-    if (!apiKey) return res.status(500).json({ erro: "Pluggy não autenticado" });
-    const response = await axios.post("https://api.pluggy.ai/connect_token", {}, {
-      headers: { "X-API-KEY": apiKey }
-    });
-    res.json({ accessToken: response.data.accessToken });
-  } catch (e) {
-    console.error("❌ Connect erro:", e.response?.data || e.message);
-    res.status(500).json({ erro: "Erro ao conectar" });
-  }
-});
-
-app.post("/criar-usuario", authMiddleware, async (req, res) => {
-  try {
-    await garantirDocumentoUsuario(req.user.uid);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("❌ Erro criar usuário:", err);
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
+app.get("/", (req, res) => res.send("API Atlax rodando 🚀"));
 
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
-  try {
-    if (req.user.uid !== req.params.uid) return res.status(403).json({ erro: "Não autorizado" });
-    const userRef = await garantirDocumentoUsuario(req.params.uid);
-    const userDoc = await userRef.get();
-    res.json({ saldo: userDoc.data()?.saldo ?? 0 });
-  } catch (err) {
-    console.error("❌ Erro saldo:", err);
-    res.status(500).json({ erro: "Erro interno" });
-  }
+  if (req.user.uid !== req.params.uid) return res.status(403).json({ erro: "Não autorizado" });
+  if (!firebasePronto) return res.status(500).json({ erro: "Firebase não configurado" });
+  const ref = await garantirUsuario(req.params.uid);
+  if (!ref) return res.status(500).json({ erro: "Erro ao acessar usuário" });
+  const doc = await ref.get();
+  res.json({ saldo: doc.data()?.saldo ?? 0 });
 });
 
-app.get("/extrato/:uid", authMiddleware, async (req, res) => {
-  try {
-    if (req.user.uid !== req.params.uid) return res.status(403).json({ erro: "Não autorizado" });
-    const snapshot = await db.collection("transactions")
-      .where("uid", "==", req.params.uid)
-      .orderBy("criadoEm", "desc")
-      .get();
-    const lista = snapshot.docs.map(doc => doc.data());
-    res.json(lista);
-  } catch (err) {
-    console.error("❌ Extrato erro:", err);
-    res.status(500).json({ erro: "Erro ao buscar extrato" });
-  }
-});
-
-// 🔥 DEPÓSITO (ORIGINAL, FUNCIONAL, COM QR CODE REAL)
+// 🔥 DEPÓSITO (ORIGINAL, SEM ALTERAÇÕES NO QR)
 app.post("/deposito", authMiddleware, async (req, res) => {
-  console.log("📥 Requisição de depósito recebida");
+  console.log("📥 Depósito recebido");
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
     const { valor } = req.body;
@@ -136,21 +81,27 @@ app.post("/deposito", authMiddleware, async (req, res) => {
       return res.status(500).json({ erro: "Erro ao gerar QR Code" });
     }
     
-    console.log(`✅ Pagamento criado: ${pagamento.id} - Status: ${pagamento.status}`);
+    console.log(`✅ Pagamento criado: ${pagamento.id}`);
     
-    // Salvar no Firestore para tracking
-    await db.collection("pagamentos").doc(pagamento.id.toString()).set({
-      uid: req.user.uid,
-      valor: Number(valor),
-      status: pagamento.status,
-      criadoEm: new Date()
-    });
+    // Tenta salvar no Firestore, mas não quebra se falhar
+    if (firebasePronto) {
+      try {
+        await db.collection("pagamentos").doc(pagamento.id.toString()).set({
+          uid: req.user.uid,
+          valor: Number(valor),
+          status: "pending",
+          criadoEm: new Date()
+        });
+      } catch (dbErr) {
+        console.error("⚠️ Não salvou no Firestore, mas QR foi gerado:", dbErr.message);
+      }
+    }
     
     res.json({
       id: pagamento.id,
       qr_img: qr.qr_code_base64,
       copia_cola: qr.qr_code,
-      status: pagamento.status
+      status: "pending"
     });
   } catch (err) {
     console.error("❌ Erro ao criar pagamento:", err.message);
@@ -158,29 +109,24 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR PAGAMENTO (CORRIGIDO COM garantirDocumentoUsuario)
+// 🔥 VERIFICAR PAGAMENTO
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
     const { id } = req.params;
-    console.log(`🔍 Verificando pagamento ${id}...`);
-    
     const pagamento = await payment.get({ id });
-    console.log(`📊 Status do pagamento ${id}: ${pagamento.status}`);
+    console.log(`📊 Status: ${pagamento.status}`);
     
-    if (pagamento.status === "approved") {
+    if (pagamento.status === "approved" && firebasePronto) {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
       
-      console.log(`✅ Pagamento aprovado! Atualizando saldo de ${uid} em R$ ${valor}`);
-      
       if (uid) {
-        try {
-          const userRef = await garantirDocumentoUsuario(uid);
-          await userRef.update({
+        const ref = await garantirUsuario(uid);
+        if (ref) {
+          await ref.update({
             saldo: admin.firestore.FieldValue.increment(Number(valor))
           });
-          
           await db.collection("transactions").add({
             uid,
             tipo: "deposito",
@@ -188,161 +134,20 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
             status: "aprovado",
             criadoEm: new Date()
           });
-          
-          await db.collection("pagamentos").doc(id.toString()).update({
-            status: "approved",
-            atualizadoEm: new Date()
-          });
-          
-          console.log(`💰 Saldo atualizado com sucesso`);
-        } catch (updateErr) {
-          console.error("❌ Erro ao atualizar saldo:", updateErr);
+          console.log(`💰 Saldo atualizado: +R$ ${valor}`);
         }
       }
     }
     
     res.json({
-      id: pagamento.id,
       status: pagamento.status,
       amount: pagamento.transaction_amount
     });
   } catch (err) {
-    console.error("❌ Erro ao verificar pagamento:", err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao verificar pagamento" });
-  }
-});
-
-// 🔥 WEBHOOK MP (CORRIGIDO COM garantirDocumentoUsuario)
-app.post("/webhook/mp", async (req, res) => {
-  try {
-    const paymentId = req.body?.data?.id;
-    if (!paymentId || !payment) return res.sendStatus(200);
-    
-    const pagamento = await payment.get({ id: paymentId });
-    console.log(`📥 Webhook: ${pagamento.status}`);
-    
-    if (pagamento.status === "approved") {
-      const valor = pagamento.transaction_amount;
-      const uid = pagamento.metadata?.uid;
-      
-      if (uid) {
-        const userRef = await garantirDocumentoUsuario(uid);
-        await userRef.update({
-          saldo: admin.firestore.FieldValue.increment(Number(valor))
-        });
-        
-        await db.collection("transactions").add({
-          uid,
-          tipo: "deposito",
-          valor: Number(valor),
-          status: "aprovado",
-          criadoEm: new Date()
-        });
-        
-        console.log(`💰 Webhook: Saldo atualizado para ${uid}`);
-      }
-    }
-    
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("❌ Webhook erro:", e);
-    res.sendStatus(500);
-  }
-});
-
-app.post("/saque", authMiddleware, async (req, res) => {
-  try {
-    const { valor, pix } = req.body;
-    const uid = req.user.uid;
-    const userRef = await garantirDocumentoUsuario(uid);
-    const userDoc = await userRef.get();
-    const saldo = userDoc.data().saldo || 0;
-    
-    if (valor > saldo) return res.status(400).json({ erro: "Saldo insuficiente" });
-    
-    await userRef.update({
-      saldo: admin.firestore.FieldValue.increment(-Number(valor))
-    });
-    
-    await db.collection("transactions").add({
-      uid,
-      tipo: "saque",
-      valor,
-      status: "pendente",
-      criadoEm: new Date()
-    });
-    
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("❌ Erro saque:", err);
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
-
-app.post("/investir", authMiddleware, async (req, res) => {
-  try {
-    const { tipo, valor } = req.body;
-    const uid = req.user.uid;
-
-    const ref = await garantirDocumentoUsuario(uid);
-    
-    await db.runTransaction(async (t) => {
-      const doc = await t.get(ref);
-      const saldoAtual = doc.data().saldo || 0;
-      if (valor > saldoAtual) throw new Error("Saldo insuficiente");
-      t.update(ref, {
-        [`investimentos.${tipo}`]: admin.firestore.FieldValue.increment(Number(valor)),
-        saldo: admin.firestore.FieldValue.increment(-Number(valor))
-      });
-    });
-
-    await db.collection("transactions").add({
-      uid,
-      tipo: "investimento",
-      categoria: tipo,
-      valor,
-      criadoEm: new Date()
-    });
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("❌ Erro investir:", err);
-    res.status(400).json({ erro: err.message });
-  }
-});
-
-app.post("/ia", authMiddleware, async (req, res) => {
-  try {
-    const { mensagem } = req.body;
-    const uid = req.user?.uid;
-
-    if (mensagem && (mensagem.toLowerCase().includes("analise") || mensagem.toLowerCase().includes("carteira"))) {
-      if (!uid) return res.json({ resposta: "Faça login para analisar sua carteira." });
-      try {
-        const analise = await analisarUsuario(uid);
-        return res.json({ resposta: analise });
-      } catch (err) {
-        return res.json({ resposta: "Não consegui analisar sua carteira agora." });
-      }
-    }
-
-    if (GEMINI_API_KEY) {
-      try {
-        const response = await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
-          { contents: [{ parts: [{ text: `Aja como um oráculo financeiro sábio e poético. Responda: ${mensagem}` }] }] }
-        );
-        return res.json({ resposta: response.data.candidates[0].content.parts[0].text });
-      } catch (err) {}
-    }
-
-    res.json({ resposta: "Você disse: " + mensagem });
-  } catch (err) {
-    res.status(500).json({ resposta: "Erro interno" });
+    console.error("❌ Erro ao verificar:", err.message);
+    res.status(500).json({ erro: "Erro ao verificar" });
   }
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Rodando na porta ${PORT}`));
