@@ -186,13 +186,33 @@ app.post("/deposito", authMiddleware, async (req, res) => {
       body: {
         transaction_amount: Number(valor),
         payment_method_id: "pix",
-        payer: { email: "cliente@atlax.com" },
+        payer: { 
+          email: "cliente@atlax.com",
+          identification: {
+            type: "CPF",
+            number: "12345678909"
+          }
+        },
         metadata: { uid: req.user.uid }
       }
     });
 
-    const qr = pagamento.point_of_interaction.transaction_data;
+    const qr = pagamento.point_of_interaction?.transaction_data;
+    
+    if (!qr) {
+      console.error("QR Code não gerado:", pagamento);
+      return res.status(500).json({ erro: "Erro ao gerar QR Code" });
+    }
+    
     console.log(`📊 Pagamento criado: ${pagamento.id} - Status: ${pagamento.status}`);
+    
+    // Salvar pagamento pendente no Firestore para tracking
+    await db.collection("pagamentos").doc(pagamento.id.toString()).set({
+      uid: req.user.uid,
+      valor: Number(valor),
+      status: pagamento.status,
+      criadoEm: new Date()
+    });
     
     res.json({
       id: pagamento.id,
@@ -206,7 +226,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR STATUS DO PAGAMENTO
+// 🔥 VERIFICAR STATUS DO PAGAMENTO (ATUALIZA SALDO AUTOMATICAMENTE)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
@@ -215,6 +235,52 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     
     const pagamento = await payment.get({ id });
     console.log(`📊 Status do pagamento ${id}: ${pagamento.status}`);
+    
+    // Se foi aprovado, atualizar saldo IMEDIATAMENTE
+    if (pagamento.status === "approved") {
+      const valor = pagamento.transaction_amount;
+      const uid = pagamento.metadata?.uid;
+      
+      console.log(`✅ Pagamento aprovado! Atualizando saldo de ${uid} em R$ ${valor}`);
+      
+      if (uid) {
+        try {
+          const userRef = db.collection("users").doc(uid);
+          const userDoc = await userRef.get();
+          
+          if (userDoc.exists) {
+            const saldoAnterior = userDoc.data().saldo || 0;
+            const novoSaldo = saldoAnterior + Number(valor);
+            
+            await userRef.update({
+              saldo: admin.firestore.FieldValue.increment(Number(valor))
+            });
+            
+            console.log(`💰 Saldo atualizado: ${saldoAnterior} -> ${novoSaldo}`);
+            
+            // Registrar transação
+            await db.collection("transactions").add({
+              uid,
+              tipo: "deposito",
+              valor: Number(valor),
+              status: "aprovado",
+              criadoEm: new Date()
+            });
+            
+            // Atualizar status do pagamento
+            await db.collection("pagamentos").doc(id.toString()).update({
+              status: "approved",
+              atualizadoEm: new Date()
+            });
+            
+          } else {
+            console.error(`❌ Usuário ${uid} não encontrado no Firestore`);
+          }
+        } catch (updateErr) {
+          console.error("❌ Erro ao atualizar saldo:", updateErr);
+        }
+      }
+    }
     
     res.json({
       id: pagamento.id,
@@ -227,35 +293,65 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK MP
+// 🔥 WEBHOOK MP (ATUALIZA SALDO AUTOMATICAMENTE)
 app.post("/webhook/mp", async (req, res) => {
   try {
-    console.log("📥 Webhook MP recebido:", req.body);
+    console.log("📥 Webhook MP recebido:", JSON.stringify(req.body));
     const paymentId = req.body?.data?.id;
-    if (!paymentId || !payment) return res.sendStatus(200);
     
+    if (!paymentId || !payment) {
+      console.log("⚠️ Webhook sem ID ou MP não configurado");
+      return res.sendStatus(200);
+    }
+    
+    console.log(`🔍 Processando webhook para pagamento ${paymentId}`);
     const pagamento = await payment.get({ id: paymentId });
-    console.log(`📊 Webhook status: ${pagamento.status}`);
+    console.log(`📊 Status via webhook: ${pagamento.status}`);
     
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
-      const ref = db.collection("users").doc(uid);
       
-      await ref.update({
-        saldo: admin.firestore.FieldValue.increment(Number(valor))
-      });
+      console.log(`✅ Webhook: Pagamento aprovado! UID: ${uid}, Valor: ${valor}`);
       
-      await db.collection("transactions").add({
-        uid,
-        tipo: "deposito",
-        valor,
-        status: "aprovado",
-        criadoEm: new Date()
-      });
-      
-      console.log("💰 Depósito aprovado via webhook:", valor);
+      if (uid) {
+        const userRef = db.collection("users").doc(uid);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+          const saldoAnterior = userDoc.data().saldo || 0;
+          
+          await userRef.update({
+            saldo: admin.firestore.FieldValue.increment(Number(valor))
+          });
+          
+          const novoSaldo = saldoAnterior + Number(valor);
+          console.log(`💰 Webhook: Saldo atualizado: ${saldoAnterior} -> ${novoSaldo}`);
+          
+          await db.collection("transactions").add({
+            uid,
+            tipo: "deposito",
+            valor: Number(valor),
+            status: "aprovado",
+            criadoEm: new Date()
+          });
+          
+          // Marcar pagamento como processado
+          await db.collection("pagamentos").doc(paymentId.toString()).set({
+            uid,
+            valor: Number(valor),
+            status: "approved",
+            processadoEm: new Date()
+          }, { merge: true });
+          
+        } else {
+          console.error(`❌ Webhook: Usuário ${uid} não encontrado`);
+        }
+      } else {
+        console.error("❌ Webhook: UID não encontrado nos metadados");
+      }
     }
+    
     res.sendStatus(200);
   } catch (e) {
     console.error("❌ Webhook erro:", e);
