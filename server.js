@@ -277,6 +277,41 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+// 🔥 FORÇAR DEPÓSITO (PARA TESTES)
+app.post("/forcar-deposito", authMiddleware, async (req, res) => {
+  try {
+    const { paymentId, valor } = req.body;
+    const uid = req.user.uid;
+    
+    console.log(`⚡ Forçando depósito: ${paymentId} - R$ ${valor} para ${uid}`);
+    
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ erro: "Usuário não encontrado" });
+    }
+    
+    await userRef.update({
+      saldo: admin.firestore.FieldValue.increment(Number(valor))
+    });
+    
+    await db.collection("transactions").add({
+      uid,
+      tipo: "deposito",
+      valor: Number(valor),
+      status: "aprovado",
+      criadoEm: new Date()
+    });
+    
+    console.log(`💰 Saldo atualizado via forçar: +R$ ${valor}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ Erro ao forçar depósito:", err);
+    res.status(500).json({ erro: "Erro ao forçar depósito" });
+  }
+});
+
 // 🔥 SAQUE
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
