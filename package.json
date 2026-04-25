@@ -10,7 +10,6 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "firebase-admin": "^13.8.0",
-    "mercadopago": "^2.12.0",
-    "qrcode": "^1.5.3"
+    "mercadopago": "^2.12.0"
   }
 }
