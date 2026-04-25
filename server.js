@@ -202,6 +202,23 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
+// 🔥 VERIFICAR STATUS DO PAGAMENTO (POLLING)
+app.get("/verificar-pagamento/:id", async (req, res) => {
+  try {
+    if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
+    const { id } = req.params;
+    const pagamento = await payment.get({ id });
+    res.json({
+      id: pagamento.id,
+      status: pagamento.status,
+      amount: pagamento.transaction_amount
+    });
+  } catch (err) {
+    console.error("❌ Erro ao verificar pagamento:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao verificar pagamento" });
+  }
+});
+
 // 🔥 WEBHOOK MP
 app.post("/webhook/mp", async (req, res) => {
   try {
