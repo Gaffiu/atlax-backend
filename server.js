@@ -24,8 +24,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔐 AUTH MIDDLEWARE GLOBAL (opcional: aplicar em rotas específicas)
-// Vamos aplicar em rotas que precisam de autenticação
+// 🔐 AUTH MIDDLEWARE (aplicado seletivamente nas rotas)
 
 // 🔥 ENV
 const {
@@ -38,7 +37,7 @@ const {
 // 🔥 VALIDAÇÃO ENV
 if (!MP_TOKEN) console.warn("⚠️ MP_TOKEN não definido");
 if (!PLUGGY_CLIENT_ID || !PLUGGY_CLIENT_SECRET) console.warn("⚠️ Pluggy não configurado");
-if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não definida");
+if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não definida. IA Gemini desativada.");
 
 // 🔥 MERCADO PAGO
 let payment = null;
@@ -84,7 +83,7 @@ app.get("/connect", async (req, res) => {
   }
 });
 
-// 🔥 TRANSAÇÕES PLUGGY (NOVA ROTA)
+// 🔥 TRANSAÇÕES PLUGGY
 app.get("/transacoes/:itemId", authMiddleware, async (req, res) => {
   try {
     if (!apiKey) await autenticarPluggy();
@@ -101,11 +100,11 @@ app.get("/transacoes/:itemId", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 WEBHOOK PLUGGY (NOVA ROTA)
+// 🔥 WEBHOOK PLUGGY
 app.post("/webhook/pluggy", async (req, res) => {
   try {
     console.log("📥 Webhook Pluggy recebido:", req.body);
-    // Aqui você pode processar atualizações automáticas de transações
+    // Processar atualizações automáticas de transações se necessário
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ Erro webhook Pluggy:", err);
@@ -113,7 +112,7 @@ app.post("/webhook/pluggy", async (req, res) => {
   }
 });
 
-// 🔥 CRIAR USUÁRIO (com auth)
+// 🔥 CRIAR USUÁRIO
 app.post("/criar-usuario", authMiddleware, async (req, res) => {
   try {
     const uid = req.user.uid;
@@ -142,10 +141,10 @@ app.post("/criar-usuario", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 SALDO (com auth)
+// 🔥 SALDO
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
-    // Garantir que o uid do token corresponde ao solicitado
+    // Verifica se o uid do token corresponde ao solicitado
     if (req.user.uid !== req.params.uid) {
       return res.status(403).json({ erro: "Não autorizado" });
     }
@@ -158,7 +157,7 @@ app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 EXTRATO (com auth)
+// 🔥 EXTRATO
 app.get("/extrato/:uid", authMiddleware, async (req, res) => {
   try {
     if (req.user.uid !== req.params.uid) {
@@ -177,7 +176,7 @@ app.get("/extrato/:uid", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 DEPÓSITO (com auth)
+// 🔥 DEPÓSITO
 app.post("/deposito", authMiddleware, async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
@@ -232,7 +231,7 @@ app.post("/webhook/mp", async (req, res) => {
   }
 });
 
-// 🔥 SAQUE (com auth)
+// 🔥 SAQUE
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor, pix } = req.body;
@@ -258,7 +257,7 @@ app.post("/saque", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 INVESTIR (com auth)
+// 🔥 INVESTIR (com mapeamento de tipos)
 app.post("/investir", authMiddleware, async (req, res) => {
   try {
     const { tipo, valor } = req.body;
@@ -297,8 +296,6 @@ app.post("/investir", authMiddleware, async (req, res) => {
     }
 
     if (!TIPOS_VALIDOS.includes(tipoBanco)) {
-      // Se não encontrar, tenta salvar como categoria personalizada (menos ideal)
-      // Ou rejeita:
       return res.status(400).json({ erro: "Tipo de investimento inválido" });
     }
 
@@ -346,9 +343,25 @@ app.post("/ia", authMiddleware, async (req, res) => {
       }
     }
 
-    // Resposta simples para outras perguntas
+    // Para perguntas gerais (Oráculo, etc.), também podemos usar o Gemini com um prompt poético
+    if (GEMINI_API_KEY) {
+      try {
+        const response = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            contents: [{ parts: [{ text: `Aja como um oráculo financeiro sábio e poético. Responda: ${mensagem}` }] }]
+          }
+        );
+        const resposta = response.data.candidates[0].content.parts[0].text;
+        return res.json({ resposta });
+      } catch (err) {
+        console.error("Erro Gemini:", err);
+      }
+    }
+
+    // Fallback sem IA
     res.json({
-      resposta: "Você disse: " + mensagem + ". Estou aprendendo a responder perguntas mais complexas. Em breve poderei ajudar com análises completas!"
+      resposta: "Estou refinando meus conhecimentos. Em breve darei respostas mais sábias!"
     });
   } catch (err) {
     console.error("Erro na IA:", err);
