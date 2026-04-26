@@ -1,7 +1,7 @@
 console.log("🔥 Iniciando servidor...");
 
-process.on("uncaughtException", (err) => console.error("💥 Erro não tratado:", err));
-process.on("unhandledRejection", (err) => console.error("💥 Promise rejeitada:", err));
+process.on("uncaughtException", (err) => console.error("💥 Erro:", err));
+process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 
 const express = require("express");
 const axios = require("axios");
@@ -16,11 +16,7 @@ app.use(express.json());
 
 console.log("📌 Firebase pronto:", firebasePronto);
 
-const { MP_TOKEN, PLUGGY_CLIENT_ID, PLUGGY_CLIENT_SECRET } = process.env;
-
-console.log("MP_TOKEN:", MP_TOKEN ? "✅" : "❌");
-console.log("PLUGGY_CLIENT_ID:", PLUGGY_CLIENT_ID ? "✅" : "❌");
-
+const { MP_TOKEN } = process.env;
 let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
@@ -28,63 +24,42 @@ if (MP_TOKEN) {
   console.log("💳 Mercado Pago configurado");
 }
 
-// Função que garante que o documento do usuário existe
-async function garantirDocumentoUsuario(uid) {
-  if (!firebasePronto) throw new Error("Firebase não configurado");
-  const userRef = db.collection("users").doc(uid);
-  const userDoc = await userRef.get();
-  if (!userDoc.exists) {
-    console.log(`📄 Criando documento para ${uid}`);
-    await userRef.set({ saldo: 0, investimentos: {}, criadoEm: new Date() });
-  } else {
-    console.log(`📄 Documento já existe para ${uid}`);
-  }
-  return userRef;
-}
+// ----- ROTAS -----
 
-// Função para gerar imagem QR a partir do código PIX (fallback)
-async function gerarQRCodeImagem(codigoPix) {
+app.get("/", (req, res) => res.send("API Atlax 🚀"));
+
+// Rota de diagnóstico do Firestore
+app.get("/ping-firestore", async (req, res) => {
   try {
-    const response = await axios.get(
-      `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(codigoPix)}`,
-      { responseType: "arraybuffer" }
-    );
-    const base64 = Buffer.from(response.data, "binary").toString("base64");
-    return `data:image/png;base64,${base64}`;
+    const ref = db.collection("ping").doc("teste");
+    await ref.set({ ok: true, timestamp: new Date() });
+    const snap = await ref.get();
+    await ref.delete();
+    res.json({ firestore: "online", data: snap.data() });
   } catch (e) {
-    console.error("Erro ao gerar QR externo:", e.message);
-    return null;
-  }
-}
-
-// ==================== ROTAS ====================
-
-app.get("/", (req, res) => res.send("API Atlax ativa 🚀"));
-
-app.get("/saldo/:uid", authMiddleware, async (req, res) => {
-  try {
-    if (req.user.uid !== req.params.uid) return res.status(403).json({ erro: "Não autorizado" });
-    if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
-    const userRef = await garantirDocumentoUsuario(req.params.uid);
-    const userDoc = await userRef.get();
-    const saldo = userDoc.data()?.saldo ?? 0;
-    console.log(`📊 Saldo consultado para ${req.params.uid}: ${saldo}`);
-    res.json({ saldo });
-  } catch (err) {
-    console.error("❌ Erro saldo:", err);
-    res.status(500).json({ erro: "Erro interno" });
+    console.error("❌ Ping Firestore falhou:", e.message);
+    res.status(500).json({ firestore: "offline", erro: e.message });
   }
 });
 
-// 🔥 DEPÓSITO
+// Saldo
+app.get("/saldo/:uid", authMiddleware, async (req, res) => {
+  if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
+  try {
+    const doc = await db.collection("users").doc(req.user.uid).get();
+    res.json({ saldo: doc.data()?.saldo ?? 0 });
+  } catch (e) {
+    console.error("❌ Erro saldo:", e.message);
+    res.status(500).json({ erro: "Erro ao buscar saldo" });
+  }
+});
+
+// Depósito (QR Code original)
 app.post("/deposito", authMiddleware, async (req, res) => {
-  console.log("📥 Depósito recebido");
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
     const { valor } = req.body;
     if (!valor || valor <= 0) return res.status(400).json({ erro: "Valor inválido" });
-
-    console.log(`💰 Criando pagamento de R$ ${valor} para ${req.user.uid}`);
 
     const pagamento = await payment.create({
       body: {
@@ -95,53 +70,26 @@ app.post("/deposito", authMiddleware, async (req, res) => {
       }
     });
 
-    console.log("🔍 Resposta do MP:", JSON.stringify(pagamento).slice(0, 200));
-
     const qr = pagamento.point_of_interaction?.transaction_data;
-    let qr_img = qr?.qr_code_base64;
-    const copia_cola = qr?.qr_code;
-
-    // Fallback: se não veio base64, gera imagem a partir do copia_cola
-    if (!qr_img && copia_cola) {
-      console.log("⚠️ QR base64 ausente, gerando imagem via API externa...");
-      qr_img = await gerarQRCodeImagem(copia_cola);
-    }
-
-    if (!qr_img || !copia_cola) {
-      console.error("❌ Não foi possível obter QR Code");
-      return res.status(500).json({ erro: "Erro ao gerar QR Code" });
-    }
+    if (!qr) return res.status(500).json({ erro: "QR não gerado" });
 
     console.log(`✅ Pagamento criado: ${pagamento.id}`);
-
-    // Salvar tracking (não essencial)
-    try {
-      await db.collection("pagamentos").doc(pagamento.id.toString()).set({
-        uid: req.user.uid,
-        valor: Number(valor),
-        status: "pending",
-        criadoEm: new Date()
-      });
-    } catch (dbErr) {
-      console.error("⚠️ Erro ao salvar tracking:", dbErr.message);
-    }
-
     res.json({
       id: pagamento.id,
-      qr_img,
-      copia_cola,
-      status: "pending"
+      qr_img: qr.qr_code_base64,
+      copia_cola: qr.qr_code
     });
   } catch (err) {
-    console.error("❌ Erro ao criar pagamento:", err.message);
+    console.error("❌ Erro depósito:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao gerar PIX" });
   }
 });
 
-// 🔥 VERIFICAR PAGAMENTO
+// Verificar pagamento (com atualização usando set/merge)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
+
     const { id } = req.params;
     console.log(`🔍 Verificando pagamento ${id}...`);
 
@@ -151,16 +99,20 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
-      console.log(`✅ Aprovado! UID: ${uid}, Valor: ${valor}`);
+
+      console.log(`✅ Aprovado! UID: ${uid}, Valor: R$ ${valor}`);
 
       if (uid && firebasePronto) {
         try {
-          const userRef = await garantirDocumentoUsuario(uid);
-          await userRef.update({
-            saldo: admin.firestore.FieldValue.increment(Number(valor))
-          });
-          console.log(`💰 Saldo atualizado no Firestore`);
+          // Usamos set com merge: ele CRIA o documento se não existir e mescla os campos
+          await db.collection("users").doc(uid).set({
+            saldo: admin.firestore.FieldValue.increment(Number(valor)),
+            atualizadoEm: new Date()
+          }, { merge: true });
 
+          console.log(`💰 Saldo atualizado (set/merge) no Firestore`);
+
+          // Registrar transação
           await db.collection("transactions").add({
             uid,
             tipo: "deposito",
@@ -170,10 +122,10 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
           });
           console.log(`📝 Transação registrada`);
         } catch (updateErr) {
-          console.error("❌ Erro ao atualizar saldo no Firestore:", updateErr);
+          console.error("❌ Erro ao atualizar saldo:", updateErr.message);
         }
       } else {
-        console.error("❌ Firebase offline ou UID ausente");
+        console.error("❌ UID ausente ou Firebase offline");
       }
     }
 
@@ -182,13 +134,39 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       amount: pagamento.transaction_amount
     });
   } catch (err) {
-    console.error("❌ Erro ao verificar:", err.message);
+    console.error("❌ Erro ao verificar:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao verificar" });
   }
 });
 
-// Webhook, saque, investir, IA mantidos (não afetam o problema)
-// ...
+// Webhook (também usa set/merge)
+app.post("/webhook/mp", async (req, res) => {
+  try {
+    const paymentId = req.body?.data?.id;
+    if (!paymentId || !payment) return res.sendStatus(200);
+
+    const pagamento = await payment.get({ id: paymentId });
+    console.log(`📥 Webhook: ${pagamento.status}`);
+
+    if (pagamento.status === "approved") {
+      const valor = pagamento.transaction_amount;
+      const uid = pagamento.metadata?.uid;
+
+      if (uid && firebasePronto) {
+        await db.collection("users").doc(uid).set({
+          saldo: admin.firestore.FieldValue.increment(Number(valor)),
+          atualizadoEm: new Date()
+        }, { merge: true });
+        console.log(`💰 Saldo atualizado via webhook (set/merge)`);
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Erro webhook:", err.message);
+    res.sendStatus(500);
+  }
+});
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Rodando na porta ${PORT}`));
