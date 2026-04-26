@@ -24,11 +24,11 @@ if (MP_TOKEN) {
   console.log("💳 Mercado Pago configurado");
 }
 
-// ----- ROTAS -----
+// ===== ROTAS =====
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
-// Rota de diagnóstico do Firestore
+// Diagnóstico do Firestore
 app.get("/ping-firestore", async (req, res) => {
   try {
     const ref = db.collection("ping").doc("teste");
@@ -42,12 +42,32 @@ app.get("/ping-firestore", async (req, res) => {
   }
 });
 
-// Saldo
+// Diagnóstico do documento do usuário
+app.get("/debug-usuario/:uid", async (req, res) => {
+  try {
+    if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
+    const doc = await db.collection("users").doc(req.params.uid).get();
+    if (!doc.exists) {
+      return res.json({ existe: false, uid: req.params.uid });
+    }
+    res.json({
+      existe: true,
+      uid: req.params.uid,
+      dados: doc.data()
+    });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// Saldo (leitura direta do servidor)
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
   try {
-    const doc = await db.collection("users").doc(req.user.uid).get();
-    res.json({ saldo: doc.data()?.saldo ?? 0 });
+    const doc = await db.collection("users").doc(req.user.uid).get({ source: "server" });
+    const saldo = doc.data()?.saldo ?? 0;
+    console.log(`📊 Saldo retornado para ${req.user.uid}: ${saldo}`);
+    res.json({ saldo });
   } catch (e) {
     console.error("❌ Erro saldo:", e.message);
     res.status(500).json({ erro: "Erro ao buscar saldo" });
@@ -104,7 +124,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 
       if (uid && firebasePronto) {
         try {
-          // Usamos set com merge: ele CRIA o documento se não existir e mescla os campos
           await db.collection("users").doc(uid).set({
             saldo: admin.firestore.FieldValue.increment(Number(valor)),
             atualizadoEm: new Date()
@@ -112,7 +131,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 
           console.log(`💰 Saldo atualizado (set/merge) no Firestore`);
 
-          // Registrar transação
           await db.collection("transactions").add({
             uid,
             tipo: "deposito",
