@@ -3,8 +3,10 @@ const admin = require("firebase-admin");
 let db;
 let firebasePronto = false;
 
+// 1. Carrega a credencial
 let serviceAccount = null;
 try {
+  // Tenta carregar de um arquivo local (se existir)
   serviceAccount = require("./serviceAccountKey.json");
   console.log("✅ Firebase: credencial local carregada");
 } catch (e) {
@@ -21,27 +23,20 @@ if (!serviceAccount && process.env.FIREBASE_SERVICE_ACCOUNT) {
 }
 
 if (serviceAccount) {
-  admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    // Ignora campos undefined para evitar erros
+    databaseURL: undefined,
+    projectId: serviceAccount.project_id,
+  });
   db = admin.firestore();
   firebasePronto = true;
   console.log("🔥 Firebase Admin pronto");
-
-  // Teste opcional – não trava o servidor se falhar
-  (async () => {
-    try {
-      const testRef = db.collection("teste").doc("inicializacao");
-      await testRef.set({ status: "ok", timestamp: new Date() });
-      const snap = await testRef.get();
-      console.log("📝 Teste de escrita/leitura Firestore: OK");
-      await testRef.delete();
-    } catch (err) {
-      console.warn("⚠️ Teste inicial falhou, mas o servidor continuará.", err.message);
-    }
-  })();
 } else {
   console.error("❌ NENHUMA CREDENCIAL FIREBASE ENCONTRADA");
+  // Mock que gera erro descritivo
   db = {
-    collection: () => { throw new Error("Firebase não configurado"); }
+    collection: () => { throw new Error("Firebase não configurado. Configure FIREBASE_SERVICE_ACCOUNT no Render."); }
   };
 }
 
