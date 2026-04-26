@@ -23,7 +23,7 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// 🔓 ROTA PÚBLICA DE TESTE (deve vir antes do middleware)
+// 🔓 ROTA PÚBLICA DE TESTE (ANTES do middleware de autenticação)
 app.get("/teste-firestore-publico", async (req, res) => {
   try {
     const ref = db.collection("teste").doc("diag");
