@@ -24,49 +24,37 @@ if (MP_TOKEN) {
   console.log("💳 Mercado Pago configurado");
 }
 
-// ===== ROTAS =====
+// ========== FUNÇÃO AUXILIAR (CRIA DOCUMENTO SE NÃO EXISTIR) ==========
+async function garantirDocumento(uid) {
+  if (!firebasePronto) throw new Error("Firebase offline");
+  const ref = db.collection("users").doc(uid);
+  const doc = await ref.get();
+  if (!doc.exists) {
+    await ref.set({ saldo: 0, investimentos: {}, criadoEm: new Date() });
+    console.log(`📄 Documento criado para ${uid}`);
+  }
+  return ref;
+}
+
+// ========== ROTAS ==========
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
-// Diagnóstico do Firestore
-app.get("/ping-firestore", async (req, res) => {
-  try {
-    const ref = db.collection("ping").doc("teste");
-    await ref.set({ ok: true, timestamp: new Date() });
-    const snap = await ref.get();
-    await ref.delete();
-    res.json({ firestore: "online", data: snap.data() });
-  } catch (e) {
-    console.error("❌ Ping Firestore falhou:", e.message);
-    res.status(500).json({ firestore: "offline", erro: e.message });
-  }
+// Resetar saldo (para testes)
+app.post("/reset-saldo", authMiddleware, async (req, res) => {
+  await garantirDocumento(req.user.uid);
+  await db.collection("users").doc(req.user.uid).update({ saldo: 0 });
+  res.json({ ok: true, message: "Saldo zerado" });
 });
 
-// Diagnóstico do documento do usuário
-app.get("/debug-usuario/:uid", async (req, res) => {
+// Saldo
+app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
     if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
-    const doc = await db.collection("users").doc(req.params.uid).get();
-    if (!doc.exists) {
-      return res.json({ existe: false, uid: req.params.uid });
-    }
-    res.json({
-      existe: true,
-      uid: req.params.uid,
-      dados: doc.data()
-    });
-  } catch (e) {
-    res.status(500).json({ erro: e.message });
-  }
-});
-
-// Saldo (leitura direta do servidor)
-app.get("/saldo/:uid", authMiddleware, async (req, res) => {
-  if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
-  try {
-    const doc = await db.collection("users").doc(req.user.uid).get({ source: "server" });
+    await garantirDocumento(req.user.uid);
+    const doc = await db.collection("users").doc(req.user.uid).get();
     const saldo = doc.data()?.saldo ?? 0;
-    console.log(`📊 Saldo retornado para ${req.user.uid}: ${saldo}`);
+    console.log(`📊 Saldo de ${req.user.uid}: ${saldo}`);
     res.json({ saldo });
   } catch (e) {
     console.error("❌ Erro saldo:", e.message);
@@ -105,7 +93,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// Verificar pagamento (com atualização usando set/merge)
+// 🔥 VERIFICAR PAGAMENTO (COM RETORNO DO SALDO ATUALIZADO)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Mercado Pago não configurado" });
@@ -116,6 +104,8 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     const pagamento = await payment.get({ id });
     console.log(`📊 Status: ${pagamento.status}`);
 
+    let saldoAtualizado = null;
+
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
@@ -123,33 +113,33 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       console.log(`✅ Aprovado! UID: ${uid}, Valor: R$ ${valor}`);
 
       if (uid && firebasePronto) {
-        try {
-          await db.collection("users").doc(uid).set({
-            saldo: admin.firestore.FieldValue.increment(Number(valor)),
-            atualizadoEm: new Date()
-          }, { merge: true });
+        await garantirDocumento(uid);
+        await db.collection("users").doc(uid).set({
+          saldo: admin.firestore.FieldValue.increment(Number(valor)),
+          atualizadoEm: new Date()
+        }, { merge: true });
+        console.log(`💰 Saldo incrementado`);
 
-          console.log(`💰 Saldo atualizado (set/merge) no Firestore`);
+        await db.collection("transactions").add({
+          uid,
+          tipo: "deposito",
+          valor: Number(valor),
+          status: "aprovado",
+          criadoEm: new Date()
+        });
 
-          await db.collection("transactions").add({
-            uid,
-            tipo: "deposito",
-            valor: Number(valor),
-            status: "aprovado",
-            criadoEm: new Date()
-          });
-          console.log(`📝 Transação registrada`);
-        } catch (updateErr) {
-          console.error("❌ Erro ao atualizar saldo:", updateErr.message);
-        }
-      } else {
-        console.error("❌ UID ausente ou Firebase offline");
+        // Lê o saldo atualizado para retornar para o front-end
+        const doc = await db.collection("users").doc(uid).get();
+        saldoAtualizado = doc.data()?.saldo ?? null;
+        console.log(`📊 Saldo atualizado lido: ${saldoAtualizado}`);
       }
     }
 
+    // Sempre retorna o status e, se disponível, o saldo atualizado
     res.json({
       status: pagamento.status,
-      amount: pagamento.transaction_amount
+      amount: pagamento.transaction_amount,
+      saldo: saldoAtualizado
     });
   } catch (err) {
     console.error("❌ Erro ao verificar:", err.response?.data || err.message);
@@ -157,7 +147,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-// Webhook (também usa set/merge)
+// Webhook
 app.post("/webhook/mp", async (req, res) => {
   try {
     const paymentId = req.body?.data?.id;
@@ -169,16 +159,14 @@ app.post("/webhook/mp", async (req, res) => {
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
-
       if (uid && firebasePronto) {
+        await garantirDocumento(uid);
         await db.collection("users").doc(uid).set({
           saldo: admin.firestore.FieldValue.increment(Number(valor)),
           atualizadoEm: new Date()
         }, { merge: true });
-        console.log(`💰 Saldo atualizado via webhook (set/merge)`);
       }
     }
-
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ Erro webhook:", err.message);
