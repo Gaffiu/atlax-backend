@@ -23,6 +23,19 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
+// 🔓 ROTA PÚBLICA DE TESTE (deve vir antes do middleware)
+app.get("/teste-firestore-publico", async (req, res) => {
+  try {
+    const ref = db.collection("teste").doc("diag");
+    await ref.set({ msg: "ok", timestamp: new Date() });
+    const snap = await ref.get();
+    await ref.delete();
+    res.json({ firestore: "online", data: snap.data() });
+  } catch (e) {
+    res.status(500).json({ firestore: "offline", erro: e.message });
+  }
+});
+
 // Middleware que CRIA o documento do usuário (coleção 'usuarios')
 app.use(authMiddleware, async (req, res, next) => {
   if (!firebasePronto) return next();
@@ -38,19 +51,6 @@ app.use(authMiddleware, async (req, res, next) => {
     console.error("❌ Erro no middleware de criação:", e.message);
   }
   next();
-});
-
-// 🔥 ROTA DE DIAGNÓSTICO PÚBLICA (teste de permissão)
-app.get("/teste-firestore-publico", async (req, res) => {
-  try {
-    const ref = db.collection("teste").doc("publico");
-    await ref.set({ msg: "permissão OK", ts: new Date() });
-    const snap = await ref.get();
-    await ref.delete();
-    res.json({ ok: true, data: snap.data() });
-  } catch (e) {
-    res.status(500).json({ ok: false, erro: e.message });
-  }
 });
 
 // Saldo
