@@ -23,32 +23,24 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// 🔥 Middleware que CRIA o documento do usuário (coleção 'usuarios')
+// Middleware que CRIA o documento do usuário (coleção 'usuarios')
 app.use(authMiddleware, async (req, res, next) => {
   if (!firebasePronto) return next();
   try {
     const uid = req.user.uid;
-    const ref = db.collection("usuarios").doc(uid);   // ✅ NOVA COLEÇÃO
+    const ref = db.collection("usuarios").doc(uid);
     const doc = await ref.get();
     if (!doc.exists) {
-      console.log(`📄 Criando documento para ${uid} em 'usuarios'`);
       await ref.set({ saldo: 0, investimentos: {}, criadoEm: new Date() });
-      console.log(`✅ Documento criado para ${uid}`);
-    } else {
-      console.log(`📄 Documento já existente para ${uid}`);
+      console.log(`📄 Documento criado para ${uid} em 'usuarios'`);
     }
   } catch (e) {
     console.error("❌ Erro no middleware de criação:", e.message);
-    // Não bloqueia a requisição
   }
   next();
 });
 
-// ========== ROTAS ==========
-
-app.get("/", (req, res) => res.send("API Atlax 🚀"));
-
-// 🔥 ROTA DE DIAGNÓSTICO
+// ROTA DE DIAGNÓSTICO
 app.get("/criar-usuario-forcado/:uid", async (req, res) => {
   try {
     const uid = req.params.uid;
@@ -119,7 +111,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 
       if (uid && firebasePronto) {
         const userRef = db.collection("usuarios").doc(uid);
-        // Incrementa usando set/merge
         await userRef.set({
           saldo: admin.firestore.FieldValue.increment(Number(valor)),
           atualizadoEm: new Date()
@@ -134,7 +125,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
           criadoEm: new Date()
         });
 
-        // Pequeno delay para replicação
         await new Promise(r => setTimeout(r, 500));
         const doc = await userRef.get();
         saldoAtualizado = doc.data()?.saldo ?? 0;
@@ -145,7 +135,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldoAtualizado
+      saldo: saldoAtualizado   // 👈 agora o front‑end recebe o saldo nesta resposta
     });
   } catch (err) {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
