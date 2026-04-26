@@ -40,16 +40,16 @@ app.use(authMiddleware, async (req, res, next) => {
   next();
 });
 
-// ROTA DE DIAGNÓSTICO
-app.get("/criar-usuario-forcado/:uid", async (req, res) => {
+// 🔥 ROTA DE DIAGNÓSTICO PÚBLICA (teste de permissão)
+app.get("/teste-firestore-publico", async (req, res) => {
   try {
-    const uid = req.params.uid;
-    const ref = db.collection("usuarios").doc(uid);
-    await ref.set({ saldo: 100, investimentos: {}, criadoEm: new Date() }, { merge: true });
-    const doc = await ref.get();
-    res.json({ criado: true, saldo: doc.data().saldo });
+    const ref = db.collection("teste").doc("publico");
+    await ref.set({ msg: "permissão OK", ts: new Date() });
+    const snap = await ref.get();
+    await ref.delete();
+    res.json({ ok: true, data: snap.data() });
   } catch (e) {
-    res.status(500).json({ erro: e.message });
+    res.status(500).json({ ok: false, erro: e.message });
   }
 });
 
@@ -135,7 +135,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldoAtualizado   // 👈 agora o front‑end recebe o saldo nesta resposta
+      saldo: saldoAtualizado
     });
   } catch (err) {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
