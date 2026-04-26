@@ -1,4 +1,5 @@
 console.log("🔥 Iniciando servidor...");
+
 process.on("uncaughtException", (err) => console.error("💥 Erro:", err));
 process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 
@@ -13,15 +14,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+console.log("📌 Firebase pronto:", firebasePronto);
+
 const { MP_TOKEN } = process.env;
 let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
   payment = new Payment(client);
-  console.log("💳 MP configurado");
+  console.log("💳 Mercado Pago configurado");
 }
 
-// 🔐 Middleware que CRIA o documento do usuário ANTES de qualquer rota
+// ========== MIDDLEWARE DE CRIAÇÃO DE DOCUMENTO ==========
 app.use(authMiddleware, async (req, res, next) => {
   if (!firebasePronto) return next();
   try {
@@ -38,10 +41,11 @@ app.use(authMiddleware, async (req, res, next) => {
   next();
 });
 
-// ===== ROTAS =====
+// ========== ROTAS ==========
+
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
-// Rota de diagnóstico
+// Diagnóstico
 app.get("/teste-firestore", async (req, res) => {
   try {
     const ref = db.collection("teste").doc("diag");
@@ -54,7 +58,7 @@ app.get("/teste-firestore", async (req, res) => {
   }
 });
 
-// Saldo (leitura simples)
+// Saldo
 app.get("/saldo/:uid", async (req, res) => {
   try {
     if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
@@ -94,17 +98,18 @@ app.post("/deposito", async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR PAGAMENTO (SEMPRE RETORNA O SALDO)
+// 🔥 VERIFICAR PAGAMENTO (COM LEITURA GARANTIDA DO SALDO)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
+
     const { id } = req.params;
     console.log(`🔍 Verificando pagamento ${id}...`);
 
     const pagamento = await payment.get({ id });
     console.log(`📊 Status: ${pagamento.status}`);
 
-    let saldo = null;
+    let saldoAtualizado = null;
 
     if (pagamento.status === "approved") {
       const valor = pagamento.transaction_amount;
@@ -114,10 +119,10 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 
       if (uid && firebasePronto) {
         try {
-          const ref = db.collection("users").doc(uid);
+          const userRef = db.collection("users").doc(uid);
 
           // Incrementa o saldo
-          await ref.set({
+          await userRef.set({
             saldo: admin.firestore.FieldValue.increment(Number(valor)),
             atualizadoEm: new Date()
           }, { merge: true });
@@ -132,21 +137,26 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
             criadoEm: new Date()
           });
 
-          // 🔁 Lê o saldo atualizado para garantir que está correto
-          const doc = await ref.get();
-          saldo = doc.data()?.saldo ?? 0;
-          console.log(`📊 Saldo lido após incremento: ${saldo}`);
+          // Pequena pausa para garantir replicação no Firestore
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Lê o saldo atualizado
+          const doc = await userRef.get();
+          saldoAtualizado = doc.data()?.saldo ?? 0;
+          console.log(`📊 Saldo lido após incremento: ${saldoAtualizado}`);
         } catch (updateErr) {
           console.error("❌ Erro ao atualizar saldo:", updateErr.message);
         }
+      } else {
+        console.error("❌ UID ausente ou Firebase offline");
       }
     }
 
-    // 🔁 Sempre retorna o campo 'saldo'
+    // Resposta sempre inclui o campo 'saldo'
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldo
+      saldo: saldoAtualizado
     });
   } catch (err) {
     console.error("❌ Erro ao verificar:", err.response?.data || err.message);
@@ -154,5 +164,34 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+// Webhook (também com garantia de documento)
+app.post("/webhook/mp", async (req, res) => {
+  try {
+    const paymentId = req.body?.data?.id;
+    if (!paymentId || !payment) return res.sendStatus(200);
+
+    const pagamento = await payment.get({ id: paymentId });
+    console.log(`📥 Webhook: ${pagamento.status}`);
+
+    if (pagamento.status === "approved") {
+      const valor = pagamento.transaction_amount;
+      const uid = pagamento.metadata?.uid;
+
+      if (uid && firebasePronto) {
+        const userRef = db.collection("users").doc(uid);
+        await userRef.set({
+          saldo: admin.firestore.FieldValue.increment(Number(valor)),
+          atualizadoEm: new Date()
+        }, { merge: true });
+        console.log(`💰 Saldo atualizado via webhook`);
+      }
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ Erro webhook:", err.message);
+    res.sendStatus(500);
+  }
+});
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Rodando na porta ${PORT}`));
