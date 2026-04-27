@@ -115,33 +115,37 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       if (uid) {
         await garantirUsuario(uid);
 
-        // Incrementa saldo
-        const { error: errSaldo } = await supabase
+        // 🔁 Buscar saldo atual, somar e atualizar (mais seguro que raw)
+        const { data: userAtual, error: errLeitura } = await supabase
           .from("usuarios")
-          .update({ saldo: supabase.raw(`saldo + ${Number(valor)}`) })
-          .eq("id", uid);
+          .select("saldo")
+          .eq("id", uid)
+          .single();
 
-        if (errSaldo) {
-          console.error("❌ Erro ao incrementar saldo:", errSaldo.message);
+        if (errLeitura) {
+          console.error("❌ Erro ao ler saldo:", errLeitura.message);
         } else {
-          console.log(`💰 Saldo incrementado`);
-
-          // Registra transação
-          await supabase.from("transactions").insert({
-            uid,
-            tipo: "deposito",
-            valor: Number(valor),
-            status: "aprovado"
-          });
-
-          // Lê o novo saldo
-          const { data } = await supabase
+          const novoSaldo = (userAtual?.saldo ?? 0) + Number(valor);
+          const { error: errUpdate } = await supabase
             .from("usuarios")
-            .select("saldo")
-            .eq("id", uid)
-            .single();
-          saldoAtualizado = data?.saldo ?? null;
-          console.log(`📊 Saldo lido: ${saldoAtualizado}`);
+            .update({ saldo: novoSaldo })
+            .eq("id", uid);
+
+          if (errUpdate) {
+            console.error("❌ Erro ao atualizar saldo:", errUpdate.message);
+          } else {
+            console.log(`💰 Saldo incrementado para ${novoSaldo}`);
+
+            // Registra transação
+            await supabase.from("transactions").insert({
+              uid,
+              tipo: "deposito",
+              valor: Number(valor),
+              status: "aprovado"
+            });
+
+            saldoAtualizado = novoSaldo;
+          }
         }
       }
     }
@@ -167,7 +171,8 @@ app.post("/saque", authMiddleware, async (req, res) => {
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
     if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
 
-    await supabase.from("usuarios").update({ saldo: supabase.raw(`saldo - ${Number(valor)}`) }).eq("id", uid);
+    const novoSaldo = user.saldo - Number(valor);
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor), status: "pendente" });
 
     res.json({ ok: true });
@@ -190,8 +195,9 @@ app.post("/investir", authMiddleware, async (req, res) => {
     const investimentosAtuais = user?.investimentos || {};
     investimentosAtuais[tipo] = (investimentosAtuais[tipo] || 0) + Number(valor);
 
+    const novoSaldo = user.saldo - Number(valor);
     await supabase.from("usuarios").update({
-      saldo: supabase.raw(`saldo - ${Number(valor)}`),
+      saldo: novoSaldo,
       investimentos: investimentosAtuais
     }).eq("id", uid);
 
