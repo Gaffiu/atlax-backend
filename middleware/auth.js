@@ -1,34 +1,29 @@
-const admin = require("firebase-admin");
-
-// Inicializa o Firebase Admin se ainda não foi inicializado
-if (!admin.apps.length) {
-  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    : undefined;
-
-  if (serviceAccount) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  } else {
-    // Fallback para aplicações que já inicializaram de outra forma
-    admin.initializeApp();
-  }
-}
+const axios = require("axios");
 
 async function authMiddleware(req, res, next) {
-  try {
-    const token = req.headers.authorization?.split("Bearer ")[1];
+  const token = req.headers.authorization?.split("Bearer ")[1];
 
-    if (!token) {
-      return res.status(401).json({ erro: "Token não enviado" });
+  if (!token) {
+    return res.status(401).json({ erro: "Token não enviado" });
+  }
+
+  try {
+    // 🔥 API REST do Firebase Auth – gratuita e sem SDK Admin
+    const response = await axios.post(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=AIzaSyBoKjxuXPavGouobfLmDkI2Po6K5kBkulc`,
+      { idToken: token }
+    );
+
+    const user = response.data.users?.[0];
+    if (!user) {
+      return res.status(401).json({ erro: "Token inválido" });
     }
 
-    const decoded = await admin.auth().verifyIdToken(token);
-    req.user = decoded;
+    // Injeta o uid no req.user, exatamente como antes
+    req.user = { uid: user.localId };
     next();
   } catch (err) {
-    console.error("❌ Auth erro:", err);
+    console.error("❌ Auth erro:", err.response?.data || err.message);
     res.status(401).json({ erro: "Token inválido" });
   }
 }
