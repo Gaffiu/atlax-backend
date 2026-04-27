@@ -25,7 +25,6 @@ if (MP_TOKEN) {
 
 // ========== FUNÇÃO AUXILIAR (CRIA USUÁRIO SE NÃO EXISTIR) ==========
 async function garantirUsuario(uid) {
-  // Verifica se já existe
   const { data: existe } = await supabase
     .from("usuarios")
     .select("id")
@@ -42,7 +41,6 @@ async function garantirUsuario(uid) {
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
-// Rota de diagnóstico do Supabase
 app.get("/teste-supabase", async (req, res) => {
   try {
     const { data, error } = await supabase.from("usuarios").select("*").limit(1);
@@ -53,7 +51,6 @@ app.get("/teste-supabase", async (req, res) => {
   }
 });
 
-// Saldo
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
     await garantirUsuario(req.user.uid);
