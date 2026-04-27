@@ -27,16 +27,21 @@ if (MP_TOKEN) {
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
+// Diagnóstico
 app.get("/teste-supabase", async (req, res) => {
   try {
     const { data, error } = await supabase.from("usuarios").select("*").limit(1);
-    if (error) throw error;
+    if (error) {
+      console.error("❌ Erro no teste:", error);
+      return res.status(500).json({ status: "offline", erro: error.message });
+    }
     res.json({ status: "online", data });
   } catch (e) {
     res.status(500).json({ status: "offline", erro: e.message });
   }
 });
 
+// Saldo
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -45,13 +50,17 @@ app.get("/saldo/:uid", authMiddleware, async (req, res) => {
       .eq("id", req.user.uid)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      console.error("❌ Erro Supabase /saldo:", error);
+      return res.status(500).json({ erro: error.message });
+    }
+
     const saldo = data?.saldo ?? 0;
     console.log(`📊 Saldo de ${req.user.uid}: ${saldo}`);
     res.json({ saldo });
   } catch (e) {
-    console.error("❌ Erro saldo:", e.message);
-    res.status(500).json({ erro: "Erro ao buscar saldo" });
+    console.error("❌ Erro inesperado /saldo:", e);
+    res.status(500).json({ erro: "Erro interno" });
   }
 });
 
@@ -111,12 +120,15 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
           console.log(`💰 Saldo incrementado via RPC: ${saldoAtualizado}`);
 
           // Registra transação
-          await supabase.from("transactions").insert({
+          const { error: transErr } = await supabase.from("transactions").insert({
             uid,
             tipo: "deposito",
             valor: Number(valor),
             status: "aprovado",
           });
+          if (transErr) {
+            console.error("❌ Erro ao registrar transação:", transErr.message);
+          }
         }
       }
     }
@@ -124,37 +136,12 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldoAtualizado,   // sempre retorna o saldo
+      saldo: saldoAtualizado,
     });
   } catch (err) {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao verificar" });
   }
-});
-
-// Saque (corrigido)
-app.post("/saque", authMiddleware, async (req, res) => {
-  try {
-    const { valor } = req.body;
-    const uid = req.user.uid;
-    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-    if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
-
-    const novoSaldo = user.saldo - Number(valor);
-    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor) });
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("❌ Erro saque:", e.message);
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
-
-// IA (mantida)
-app.post("/ia", authMiddleware, async (req, res) => {
-  const { mensagem } = req.body;
-  res.json({ resposta: "Você disse: " + mensagem });
 });
 
 const PORT = process.env.PORT || 5000;
