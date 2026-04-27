@@ -23,18 +23,15 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// ========== ROTAS ==========
+// ===== ROTAS =====
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
 
-// Diagnóstico
+// Diagnóstico do Supabase
 app.get("/teste-supabase", async (req, res) => {
   try {
     const { data, error } = await supabase.from("usuarios").select("*").limit(1);
-    if (error) {
-      console.error("❌ Erro no teste:", error);
-      return res.status(500).json({ status: "offline", erro: error.message });
-    }
+    if (error) throw error;
     res.json({ status: "online", data });
   } catch (e) {
     res.status(500).json({ status: "offline", erro: e.message });
@@ -50,17 +47,30 @@ app.get("/saldo/:uid", authMiddleware, async (req, res) => {
       .eq("id", req.user.uid)
       .single();
 
-    if (error) {
-      console.error("❌ Erro Supabase /saldo:", error);
-      return res.status(500).json({ erro: error.message });
-    }
-
+    if (error) throw error;
     const saldo = data?.saldo ?? 0;
     console.log(`📊 Saldo de ${req.user.uid}: ${saldo}`);
     res.json({ saldo });
   } catch (e) {
-    console.error("❌ Erro inesperado /saldo:", e);
-    res.status(500).json({ erro: "Erro interno" });
+    console.error("❌ Erro saldo:", e.message);
+    res.status(500).json({ erro: "Erro ao buscar saldo" });
+  }
+});
+
+// Extrato
+app.get("/extrato/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("*")
+      .eq("uid", req.user.uid)
+      .order("criado_em", { ascending: false });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    console.error("❌ Erro extrato:", e.message);
+    res.status(500).json({ erro: "Erro ao buscar extrato" });
   }
 });
 
@@ -90,7 +100,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR PAGAMENTO (COM INCREMENTO ATÔMICO)
+// Verificar pagamento (com atualização do saldo)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
@@ -107,27 +117,34 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       console.log(`✅ Aprovado! UID: ${uid}, Valor: R$ ${valor}`);
 
       if (uid) {
-        // Chama a função RPC que incrementa e retorna o novo saldo
-        const { data: novoSaldo, error: rpcErr } = await supabase.rpc(
-          "incrementar_saldo",
-          { uid, valor }
-        );
+        // Garante que o usuário existe
+        await supabase.from("usuarios").upsert({ id: uid, saldo: 0 }, { onConflict: "id" });
 
-        if (rpcErr) {
-          console.error("❌ Erro no RPC:", rpcErr.message);
-        } else {
-          saldoAtualizado = novoSaldo;
-          console.log(`💰 Saldo incrementado via RPC: ${saldoAtualizado}`);
+        // Incrementa saldo (modo seguro)
+        const { data: userAtual, error: errLeitura } = await supabase
+          .from("usuarios")
+          .select("saldo")
+          .eq("id", uid)
+          .single();
 
-          // Registra transação
-          const { error: transErr } = await supabase.from("transactions").insert({
-            uid,
-            tipo: "deposito",
-            valor: Number(valor),
-            status: "aprovado",
-          });
-          if (transErr) {
-            console.error("❌ Erro ao registrar transação:", transErr.message);
+        if (!errLeitura) {
+          const novoSaldo = (userAtual?.saldo ?? 0) + Number(valor);
+          const { error: errUpdate } = await supabase
+            .from("usuarios")
+            .update({ saldo: novoSaldo })
+            .eq("id", uid);
+
+          if (!errUpdate) {
+            saldoAtualizado = novoSaldo;
+            console.log(`💰 Saldo incrementado: ${saldoAtualizado}`);
+
+            // Registra transação
+            await supabase.from("transactions").insert({
+              uid,
+              tipo: "deposito",
+              valor: Number(valor),
+              status: "aprovado"
+            });
           }
         }
       }
@@ -136,12 +153,70 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldoAtualizado,
+      saldo: saldoAtualizado
     });
   } catch (err) {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao verificar" });
   }
+});
+
+// 🔥 INVESTIR (VIA FUNÇÃO RPC)
+app.post("/investir", authMiddleware, async (req, res) => {
+  try {
+    const { tipo, valor } = req.body;
+    const uid = req.user.uid;
+
+    if (!tipo || !valor || isNaN(valor) || Number(valor) <= 0) {
+      return res.status(400).json({ erro: "Valor inválido" });
+    }
+
+    const { data, error } = await supabase.rpc("realizar_investimento", {
+      p_uid: uid,
+      p_tipo: tipo.toLowerCase().replace(/\s/g, ""),
+      p_valor: Number(valor)
+    });
+
+    if (error) {
+      console.error("❌ Erro RPC:", error);
+      return res.status(500).json({ erro: "Erro ao processar investimento" });
+    }
+
+    if (data?.erro) {
+      return res.status(400).json({ erro: data.erro });
+    }
+
+    res.json({ ok: true, novo_saldo: data.novo_saldo });
+  } catch (err) {
+    console.error("❌ Erro investir:", err);
+    res.status(500).json({ erro: "Erro interno" });
+  }
+});
+
+// Saque
+app.post("/saque", authMiddleware, async (req, res) => {
+  try {
+    const { valor } = req.body;
+    const uid = req.user.uid;
+
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (!user || valor > (user.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+    const novoSaldo = user.saldo - Number(valor);
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor), status: "pendente" });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Erro saque:", e.message);
+    res.status(500).json({ erro: "Erro interno" });
+  }
+});
+
+// IA (placeholder)
+app.post("/ia", authMiddleware, async (req, res) => {
+  const { mensagem } = req.body;
+  res.json({ resposta: "Você disse: " + mensagem });
 });
 
 const PORT = process.env.PORT || 5000;
