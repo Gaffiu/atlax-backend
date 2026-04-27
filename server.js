@@ -5,7 +5,7 @@ process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { db, admin, firebasePronto } = require("./firebase");
+const supabase = require("./supabase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 const authMiddleware = require("./middleware/auth");
 
@@ -13,7 +13,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-console.log("📌 Firebase pronto:", firebasePronto);
+console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
 
 const { MP_TOKEN } = process.env;
 let payment = null;
@@ -23,42 +23,48 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// 🔓 ROTA PÚBLICA DE TESTE (ANTES do middleware de autenticação)
-app.get("/teste-firestore-publico", async (req, res) => {
-  try {
-    const ref = db.collection("teste").doc("diag");
-    await ref.set({ msg: "ok", timestamp: new Date() });
-    const snap = await ref.get();
-    await ref.delete();
-    res.json({ firestore: "online", data: snap.data() });
-  } catch (e) {
-    res.status(500).json({ firestore: "offline", erro: e.message });
-  }
-});
+// ========== FUNÇÃO AUXILIAR (CRIA USUÁRIO SE NÃO EXISTIR) ==========
+async function garantirUsuario(uid) {
+  // Verifica se já existe
+  const { data: existe } = await supabase
+    .from("usuarios")
+    .select("id")
+    .eq("id", uid)
+    .single();
 
-// Middleware que CRIA o documento do usuário (coleção 'usuarios')
-app.use(authMiddleware, async (req, res, next) => {
-  if (!firebasePronto) return next();
-  try {
-    const uid = req.user.uid;
-    const ref = db.collection("usuarios").doc(uid);
-    const doc = await ref.get();
-    if (!doc.exists) {
-      await ref.set({ saldo: 0, investimentos: {}, criadoEm: new Date() });
-      console.log(`📄 Documento criado para ${uid} em 'usuarios'`);
-    }
-  } catch (e) {
-    console.error("❌ Erro no middleware de criação:", e.message);
+  if (!existe) {
+    console.log(`📄 Criando usuário ${uid} no Supabase`);
+    await supabase.from("usuarios").insert({ id: uid, saldo: 0 });
   }
-  next();
+}
+
+// ========== ROTAS ==========
+
+app.get("/", (req, res) => res.send("API Atlax 🚀"));
+
+// Rota de diagnóstico do Supabase
+app.get("/teste-supabase", async (req, res) => {
+  try {
+    const { data, error } = await supabase.from("usuarios").select("*").limit(1);
+    if (error) throw error;
+    res.json({ status: "online", data });
+  } catch (e) {
+    res.status(500).json({ status: "offline", erro: e.message });
+  }
 });
 
 // Saldo
-app.get("/saldo/:uid", async (req, res) => {
+app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
-    if (!firebasePronto) return res.status(500).json({ erro: "Firebase offline" });
-    const doc = await db.collection("usuarios").doc(req.user.uid).get();
-    const saldo = doc.data()?.saldo ?? 0;
+    await garantirUsuario(req.user.uid);
+    const { data, error } = await supabase
+      .from("usuarios")
+      .select("saldo")
+      .eq("id", req.user.uid)
+      .single();
+
+    if (error) throw error;
+    const saldo = data?.saldo ?? 0;
     console.log(`📊 Saldo de ${req.user.uid}: ${saldo}`);
     res.json({ saldo });
   } catch (e) {
@@ -68,7 +74,7 @@ app.get("/saldo/:uid", async (req, res) => {
 });
 
 // Depósito (QR Code original)
-app.post("/deposito", async (req, res) => {
+app.post("/deposito", authMiddleware, async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
     const { valor } = req.body;
@@ -109,26 +115,37 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       const uid = pagamento.metadata?.uid;
       console.log(`✅ Aprovado! UID: ${uid}, Valor: R$ ${valor}`);
 
-      if (uid && firebasePronto) {
-        const userRef = db.collection("usuarios").doc(uid);
-        await userRef.set({
-          saldo: admin.firestore.FieldValue.increment(Number(valor)),
-          atualizadoEm: new Date()
-        }, { merge: true });
-        console.log(`💰 Saldo incrementado`);
+      if (uid) {
+        await garantirUsuario(uid);
 
-        await db.collection("transactions").add({
-          uid,
-          tipo: "deposito",
-          valor: Number(valor),
-          status: "aprovado",
-          criadoEm: new Date()
-        });
+        // Incrementa saldo
+        const { error: errSaldo } = await supabase
+          .from("usuarios")
+          .update({ saldo: supabase.raw(`saldo + ${Number(valor)}`) })
+          .eq("id", uid);
 
-        await new Promise(r => setTimeout(r, 500));
-        const doc = await userRef.get();
-        saldoAtualizado = doc.data()?.saldo ?? 0;
-        console.log(`📊 Saldo lido: ${saldoAtualizado}`);
+        if (errSaldo) {
+          console.error("❌ Erro ao incrementar saldo:", errSaldo.message);
+        } else {
+          console.log(`💰 Saldo incrementado`);
+
+          // Registra transação
+          await supabase.from("transactions").insert({
+            uid,
+            tipo: "deposito",
+            valor: Number(valor),
+            status: "aprovado"
+          });
+
+          // Lê o novo saldo
+          const { data } = await supabase
+            .from("usuarios")
+            .select("saldo")
+            .eq("id", uid)
+            .single();
+          saldoAtualizado = data?.saldo ?? null;
+          console.log(`📊 Saldo lido: ${saldoAtualizado}`);
+        }
       }
     }
 
@@ -141,6 +158,59 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao verificar" });
   }
+});
+
+// Saque
+app.post("/saque", authMiddleware, async (req, res) => {
+  try {
+    const { valor } = req.body;
+    const uid = req.user.uid;
+    await garantirUsuario(uid);
+
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+    await supabase.from("usuarios").update({ saldo: supabase.raw(`saldo - ${Number(valor)}`) }).eq("id", uid);
+    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor), status: "pendente" });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Erro saque:", e.message);
+    res.status(500).json({ erro: "Erro interno" });
+  }
+});
+
+// Investir
+app.post("/investir", authMiddleware, async (req, res) => {
+  try {
+    const { tipo, valor } = req.body;
+    const uid = req.user.uid;
+    await garantirUsuario(uid);
+
+    const { data: user } = await supabase.from("usuarios").select("saldo, investimentos").eq("id", uid).single();
+    if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+    const investimentosAtuais = user?.investimentos || {};
+    investimentosAtuais[tipo] = (investimentosAtuais[tipo] || 0) + Number(valor);
+
+    await supabase.from("usuarios").update({
+      saldo: supabase.raw(`saldo - ${Number(valor)}`),
+      investimentos: investimentosAtuais
+    }).eq("id", uid);
+
+    await supabase.from("transactions").insert({ uid, tipo: "investimento", valor: Number(valor) });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Erro investir:", e.message);
+    res.status(500).json({ erro: "Erro interno" });
+  }
+});
+
+// IA (mantida igual)
+app.post("/ia", authMiddleware, async (req, res) => {
+  const { mensagem } = req.body;
+  res.json({ resposta: "Você disse: " + mensagem });
 });
 
 const PORT = process.env.PORT || 5000;
