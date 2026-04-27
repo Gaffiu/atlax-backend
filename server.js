@@ -23,20 +23,6 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// ========== FUNÇÃO AUXILIAR (CRIA USUÁRIO SE NÃO EXISTIR) ==========
-async function garantirUsuario(uid) {
-  const { data: existe } = await supabase
-    .from("usuarios")
-    .select("id")
-    .eq("id", uid)
-    .single();
-
-  if (!existe) {
-    console.log(`📄 Criando usuário ${uid} no Supabase`);
-    await supabase.from("usuarios").insert({ id: uid, saldo: 0 });
-  }
-}
-
 // ========== ROTAS ==========
 
 app.get("/", (req, res) => res.send("API Atlax 🚀"));
@@ -53,7 +39,6 @@ app.get("/teste-supabase", async (req, res) => {
 
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
   try {
-    await garantirUsuario(req.user.uid);
     const { data, error } = await supabase
       .from("usuarios")
       .select("saldo")
@@ -96,7 +81,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔥 VERIFICAR PAGAMENTO (COM LEITURA GARANTIDA DO SALDO)
+// 🔥 VERIFICAR PAGAMENTO (COM INCREMENTO ATÔMICO)
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
@@ -113,39 +98,25 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       console.log(`✅ Aprovado! UID: ${uid}, Valor: R$ ${valor}`);
 
       if (uid) {
-        await garantirUsuario(uid);
+        // Chama a função RPC que incrementa e retorna o novo saldo
+        const { data: novoSaldo, error: rpcErr } = await supabase.rpc(
+          "incrementar_saldo",
+          { uid, valor }
+        );
 
-        // 🔁 Buscar saldo atual, somar e atualizar (mais seguro que raw)
-        const { data: userAtual, error: errLeitura } = await supabase
-          .from("usuarios")
-          .select("saldo")
-          .eq("id", uid)
-          .single();
-
-        if (errLeitura) {
-          console.error("❌ Erro ao ler saldo:", errLeitura.message);
+        if (rpcErr) {
+          console.error("❌ Erro no RPC:", rpcErr.message);
         } else {
-          const novoSaldo = (userAtual?.saldo ?? 0) + Number(valor);
-          const { error: errUpdate } = await supabase
-            .from("usuarios")
-            .update({ saldo: novoSaldo })
-            .eq("id", uid);
+          saldoAtualizado = novoSaldo;
+          console.log(`💰 Saldo incrementado via RPC: ${saldoAtualizado}`);
 
-          if (errUpdate) {
-            console.error("❌ Erro ao atualizar saldo:", errUpdate.message);
-          } else {
-            console.log(`💰 Saldo incrementado para ${novoSaldo}`);
-
-            // Registra transação
-            await supabase.from("transactions").insert({
-              uid,
-              tipo: "deposito",
-              valor: Number(valor),
-              status: "aprovado"
-            });
-
-            saldoAtualizado = novoSaldo;
-          }
+          // Registra transação
+          await supabase.from("transactions").insert({
+            uid,
+            tipo: "deposito",
+            valor: Number(valor),
+            status: "aprovado",
+          });
         }
       }
     }
@@ -153,7 +124,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
     res.json({
       status: pagamento.status,
       amount: pagamento.transaction_amount,
-      saldo: saldoAtualizado
+      saldo: saldoAtualizado,   // sempre retorna o saldo
     });
   } catch (err) {
     console.error("❌ Erro verificar:", err.response?.data || err.message);
@@ -161,19 +132,17 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-// Saque
+// Saque (corrigido)
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor } = req.body;
     const uid = req.user.uid;
-    await garantirUsuario(uid);
-
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
     if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
 
     const novoSaldo = user.saldo - Number(valor);
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor), status: "pendente" });
+    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor) });
 
     res.json({ ok: true });
   } catch (e) {
@@ -182,35 +151,7 @@ app.post("/saque", authMiddleware, async (req, res) => {
   }
 });
 
-// Investir
-app.post("/investir", authMiddleware, async (req, res) => {
-  try {
-    const { tipo, valor } = req.body;
-    const uid = req.user.uid;
-    await garantirUsuario(uid);
-
-    const { data: user } = await supabase.from("usuarios").select("saldo, investimentos").eq("id", uid).single();
-    if (valor > (user?.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
-
-    const investimentosAtuais = user?.investimentos || {};
-    investimentosAtuais[tipo] = (investimentosAtuais[tipo] || 0) + Number(valor);
-
-    const novoSaldo = user.saldo - Number(valor);
-    await supabase.from("usuarios").update({
-      saldo: novoSaldo,
-      investimentos: investimentosAtuais
-    }).eq("id", uid);
-
-    await supabase.from("transactions").insert({ uid, tipo: "investimento", valor: Number(valor) });
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("❌ Erro investir:", e.message);
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
-
-// IA (mantida igual)
+// IA (mantida)
 app.post("/ia", authMiddleware, async (req, res) => {
   const { mensagem } = req.body;
   res.json({ resposta: "Você disse: " + mensagem });
