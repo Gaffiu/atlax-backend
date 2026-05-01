@@ -183,6 +183,97 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+// ========== ATLAX COINS ==========
+
+// Obter saldo de Atlax Coins
+app.get("/coins/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from("usuarios")
+      .select("atlax_coins")
+      .eq("id", req.user.uid)
+      .single();
+    
+    res.json({ coins: data?.atlax_coins || 0 });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao buscar coins" });
+  }
+});
+
+// Adicionar Atlax Coins (check-in diário, etc.)
+app.post("/coins/adicionar", authMiddleware, async (req, res) => {
+  try {
+    const { quantidade, motivo } = req.body;
+    const uid = req.user.uid;
+    
+    // Busca saldo atual
+    const { data: user } = await supabase
+      .from("usuarios")
+      .select("atlax_coins")
+      .eq("id", uid)
+      .single();
+    
+    const saldoAtual = user?.atlax_coins || 0;
+    const novoSaldo = saldoAtual + quantidade;
+    
+    await supabase
+      .from("usuarios")
+      .update({ atlax_coins: novoSaldo })
+      .eq("id", uid);
+    
+    // Registra transação
+    await supabase.from("transactions").insert({
+      uid,
+      tipo: "coins_ganhos",
+      valor: quantidade,
+      status: "aprovado",
+      categoria: motivo || "checkin"
+    });
+    
+    res.json({ coins: novoSaldo, ganhos: quantidade });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao adicionar coins" });
+  }
+});
+
+// Resgatar Atlax Coins por dinheiro
+app.post("/coins/resgatar", authMiddleware, async (req, res) => {
+  try {
+    const { quantidade } = req.body;
+    const uid = req.user.uid;
+    
+    if (!quantidade || quantidade <= 0) {
+      return res.status(400).json({ erro: "Quantidade inválida" });
+    }
+    
+    const TAXA_CONVERSAO = 0.05; // R$ 0,05 por Atlax Coin
+    
+    // Usa função RPC para atomicidade
+    const { data, error } = await supabase.rpc("resgatar_atlax_coins", {
+      p_uid: uid,
+      p_coins: quantidade,
+      p_taxa: TAXA_CONVERSAO
+    });
+    
+    if (error) {
+      return res.status(500).json({ erro: error.message });
+    }
+    
+    if (data?.erro) {
+      return res.status(400).json({ erro: data.erro });
+    }
+    
+    res.json({
+      ok: true,
+      valor_creditado: quantidade * TAXA_CONVERSAO,
+      novo_saldo: data.novo_saldo,
+      coins_restantes: data.coins_restantes
+    });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao resgatar" });
+  }
+});
+
 app.post("/investir", authMiddleware, async (req, res) => {
   try {
     const { tipo, valor } = req.body;
