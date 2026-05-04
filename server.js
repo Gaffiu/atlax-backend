@@ -368,7 +368,6 @@ app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
-// ===== BELVO - OPEN FINANCE =====
 // 1. Gerar token de conexão para o Widget (CORRIGIDO – envia credenciais no corpo)
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
@@ -390,7 +389,15 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
     );
     
     console.log("✅ Token Belvo gerado para usuário:", req.user.uid);
-    res.json({ accessToken: response.data.access });
+    
+    // Construa a URL do widget
+    const widgetUrl = `https://widget.belvo.io/?access_token=${response.data.access}&locale=pt`;
+    
+    // Retorne o token e a URL para o front-end
+    res.json({ 
+      accessToken: response.data.access, 
+      widgetUrl: widgetUrl 
+    });
     
   } catch (err) {
     console.error("❌ Erro Belvo Token:", {
