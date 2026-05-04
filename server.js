@@ -510,5 +510,32 @@ app.get("/belvo/faturas/:linkId/:accountId", authMiddleware, async (req, res) =>
   }
 });
 
+// ===== NOVA ROTA DE NOTÍCIAS DO MERCADO (ALPHA VANTAGE) =====
+app.get("/noticias", async (req, res) => {
+  if (!ALPHA_VANTAGE_API_KEY) {
+    return res.json([{ title: "API de notícias não configurada", url: "#" }]);
+  }
+  try {
+    const response = await axios.get("https://www.alphavantage.co/query", {
+      params: {
+        function: "NEWS_SENTIMENT",
+        topics: "finance, economy",
+        apikey: ALPHA_VANTAGE_API_KEY
+      }
+    });
+    const feed = response.data?.feed || [];
+    const noticias = feed.slice(0, 10).map(item => ({
+      title: item.title,
+      summary: item.summary,
+      url: item.url,
+      source: item.source
+    }));
+    res.json(noticias);
+  } catch (err) {
+    console.error("❌ Erro ao buscar notícias:", err.message);
+    res.json([]);
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
