@@ -369,28 +369,8 @@ app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
 });
 
 // ===== BELVO - OPEN FINANCE =====
-// 1. Gerar token de conexão para o Widget
+// 1. Gerar token de conexão para o Widget (CORRIGIDO – envia credenciais no corpo)
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
-  try {
-    const response = await axios.post(
-      `${BELVO_API_URL}/api/token/`,
-      {
-        id: req.user.uid,
-        scopes: "read_institutions,write_links,read_links"
-      },
-      BELVO_AUTH
-    );
-    res.json({ accessToken: response.data.access });
-  } catch (err) {
-    console.error("❌ Belvo Token:", err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao gerar token Belvo" });
-  }
-});
-
-// 2. Salvar link após conexão bem-sucedida no // 1. Gerar token de conexão para o Widget
-app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  // Log de depuração para confirmar que as variáveis estão acessíveis
   console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
   
   if (!process.env.BELVO_SECRET_ID || !process.env.BELVO_SECRET_PASSWORD) {
@@ -399,7 +379,6 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   }
 
   try {
-    // ✅ Envia as credenciais no CORPO da requisição, conforme documentação oficial
     const response = await axios.post(
       `${BELVO_API_URL}/api/token/`,
       {
@@ -407,23 +386,38 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
         password: process.env.BELVO_SECRET_PASSWORD,
         scopes: "read_institutions,write_links,read_links"
       },
-      {
-        headers: { "Content-Type": "application/json" }
-        // sem autenticação Basic aqui
-      }
+      { headers: { "Content-Type": "application/json" } }
     );
     
     console.log("✅ Token Belvo gerado para usuário:", req.user.uid);
     res.json({ accessToken: response.data.access });
     
   } catch (err) {
-    // Log detalhado do erro da API da Belvo
     console.error("❌ Erro Belvo Token:", {
       status: err.response?.status,
       data: err.response?.data,
       message: err.message
     });
     res.status(500).json({ erro: "Erro ao gerar token Belvo" });
+  }
+});
+
+// 2. Salvar link após conexão bem-sucedida no widget
+app.post("/belvo/salvar-link", authMiddleware, async (req, res) => {
+  try {
+    const { linkId, institution } = req.body;
+    const uid = req.user.uid;
+    const { error } = await supabase.from("contas").insert({
+      uid,
+      nome: institution || "Banco Conectado",
+      item_id: linkId,
+      saldo: 0,
+    });
+    if (error) return res.status(500).json({ erro: error.message });
+    res.json({ ok: true, message: "Conta conectada com sucesso!" });
+  } catch (err) {
+    console.error("❌ Erro salvar link:", err.message);
+    res.status(500).json({ erro: "Erro ao processar conexão" });
   }
 });
 
@@ -464,9 +458,46 @@ app.post("/webhook/belvo", async (req, res) => {
   const { webhook_type, data } = req.body;
   if (webhook_type === "links" && data.status === "valid") {
     console.log("🔄 Link Belvo atualizado:", data.link_id);
-    // Aqui você poderia disparar uma atualização de saldos e transações
   }
   res.status(200).send("OK");
+});
+
+// ⚠️ ROTA DE TESTE TEMPORÁRIA – REMOVA APÓS USAR
+app.get("/teste-belvo", async (req, res) => {
+  const id = process.env.BELVO_SECRET_ID;
+  const pw = process.env.BELVO_SECRET_PASSWORD;
+
+  if (!id || !pw) {
+    return res.json({ status: "erro", mensagem: "Variáveis BELVO_SECRET_ID e/ou BELVO_SECRET_PASSWORD não encontradas no ambiente." });
+  }
+
+  try {
+    const response = await axios.post(
+      "https://sandbox.belvo.com/api/token/",
+      {
+        id: id,
+        password: pw,
+        scopes: "read_institutions,write_links,read_links"
+      },
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    return res.json({
+      status: "sucesso",
+      mensagem: "Credenciais da Belvo estão CORRETAS. ✅",
+      access_token: response.data.access,
+      refresh_token: response.data.refresh
+    });
+  } catch (err) {
+    return res.json({
+      status: "erro",
+      mensagem: "Falha na autenticação com a Belvo. ❌",
+      detalhes: {
+        status_http: err.response?.status,
+        resposta_belvo: err.response?.data
+      }
+    });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
