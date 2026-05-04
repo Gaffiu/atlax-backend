@@ -574,10 +574,7 @@ app.post("/cartas", authMiddleware, async (req, res) => {
     const { titulo, texto, data_abertura } = req.body;
     const uid = req.user.uid;
     const { error } = await supabase.from("cartas_tempo").insert({
-      uid,
-      titulo,
-      texto,
-      data_abertura
+      uid, titulo, texto, data_abertura
     });
     if (error) throw error;
     res.json({ ok: true });
