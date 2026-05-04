@@ -573,6 +573,7 @@ app.post("/cartas", authMiddleware, async (req, res) => {
   try {
     const { titulo, texto, data_abertura } = req.body;
     const uid = req.user.uid;
+    console.log("💾 Salvando carta para", uid, titulo);
     const { error } = await supabase.from("cartas_tempo").insert({
       uid, titulo, texto, data_abertura
     });
