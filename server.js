@@ -15,7 +15,9 @@ app.use(express.json());
 
 console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
 
-const { MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY } = process.env;
+const { MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY, BELVO_SECRET_ID, BELVO_SECRET_PASSWORD } = process.env;
+
+// --- Mercado Pago ---
 let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
@@ -23,7 +25,21 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// ========== COTAÇÕES ==========
+// --- Cliente Belvo (ambiente Sandbox) ---
+const BELVO_API_URL = "https://sandbox.belvo.com";
+const BELVO_AUTH = BELVO_SECRET_ID && BELVO_SECRET_PASSWORD ? {
+  auth: {
+    username: BELVO_SECRET_ID,
+    password: BELVO_SECRET_PASSWORD
+  }
+} : null;
+if (BELVO_AUTH) {
+  console.log("🔑 Belvo configurado (Sandbox)");
+} else {
+  console.warn("⚠️ Variáveis BELVO_SECRET_ID/BELVO_SECRET_PASSWORD não definidas. Rotas Belvo não funcionarão.");
+}
+
+// ========== ATUALIZAÇÃO DE COTAÇÕES (mantida) ==========
 async function atualizarCriptos() {
   try {
     const { data } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
@@ -115,7 +131,7 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
-// ===== ROTAS =====
+// ===== ROTAS ORIGINAIS (mantidas integralmente) =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
 app.get("/cotacoes", async (_, res) => {
@@ -183,97 +199,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-// ========== ATLAX COINS ==========
-
-// Obter saldo de Atlax Coins
-app.get("/coins/:uid", authMiddleware, async (req, res) => {
-  try {
-    const { data } = await supabase
-      .from("usuarios")
-      .select("atlax_coins")
-      .eq("id", req.user.uid)
-      .single();
-    
-    res.json({ coins: data?.atlax_coins || 0 });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro ao buscar coins" });
-  }
-});
-
-// Adicionar Atlax Coins (check-in diário, etc.)
-app.post("/coins/adicionar", authMiddleware, async (req, res) => {
-  try {
-    const { quantidade, motivo } = req.body;
-    const uid = req.user.uid;
-    
-    // Busca saldo atual
-    const { data: user } = await supabase
-      .from("usuarios")
-      .select("atlax_coins")
-      .eq("id", uid)
-      .single();
-    
-    const saldoAtual = user?.atlax_coins || 0;
-    const novoSaldo = saldoAtual + quantidade;
-    
-    await supabase
-      .from("usuarios")
-      .update({ atlax_coins: novoSaldo })
-      .eq("id", uid);
-    
-    // Registra transação
-    await supabase.from("transactions").insert({
-      uid,
-      tipo: "coins_ganhos",
-      valor: quantidade,
-      status: "aprovado",
-      categoria: motivo || "checkin"
-    });
-    
-    res.json({ coins: novoSaldo, ganhos: quantidade });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro ao adicionar coins" });
-  }
-});
-
-// Resgatar Atlax Coins por dinheiro
-app.post("/coins/resgatar", authMiddleware, async (req, res) => {
-  try {
-    const { quantidade } = req.body;
-    const uid = req.user.uid;
-    
-    if (!quantidade || quantidade <= 0) {
-      return res.status(400).json({ erro: "Quantidade inválida" });
-    }
-    
-    const TAXA_CONVERSAO = 0.05; // R$ 0,05 por Atlax Coin
-    
-    // Usa função RPC para atomicidade
-    const { data, error } = await supabase.rpc("resgatar_atlax_coins", {
-      p_uid: uid,
-      p_coins: quantidade,
-      p_taxa: TAXA_CONVERSAO
-    });
-    
-    if (error) {
-      return res.status(500).json({ erro: error.message });
-    }
-    
-    if (data?.erro) {
-      return res.status(400).json({ erro: data.erro });
-    }
-    
-    res.json({
-      ok: true,
-      valor_creditado: quantidade * TAXA_CONVERSAO,
-      novo_saldo: data.novo_saldo,
-      coins_restantes: data.coins_restantes
-    });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro ao resgatar" });
-  }
-});
-
 app.post("/investir", authMiddleware, async (req, res) => {
   try {
     const { tipo, valor } = req.body;
@@ -317,6 +242,212 @@ app.post("/saque", authMiddleware, async (req, res) => {
 app.post("/ia", authMiddleware, (req, res) => {
   const { mensagem } = req.body;
   res.json({ resposta: "Você disse: " + mensagem });
+});
+
+// ===== ATLAX COINS (mantidas) =====
+app.get("/coins/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from("usuarios")
+      .select("atlax_coins")
+      .eq("id", req.user.uid)
+      .single();
+    res.json({ coins: data?.atlax_coins || 0 });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao buscar coins" });
+  }
+});
+
+app.post("/coins/adicionar", authMiddleware, async (req, res) => {
+  try {
+    const { quantidade, motivo } = req.body;
+    const uid = req.user.uid;
+    const { data: user } = await supabase
+      .from("usuarios")
+      .select("atlax_coins")
+      .eq("id", uid)
+      .single();
+    const saldoAtual = user?.atlax_coins || 0;
+    const novoSaldo = saldoAtual + quantidade;
+    await supabase
+      .from("usuarios")
+      .update({ atlax_coins: novoSaldo })
+      .eq("id", uid);
+    await supabase.from("transactions").insert({
+      uid,
+      tipo: "coins_ganhos",
+      valor: quantidade,
+      status: "aprovado",
+      categoria: motivo || "checkin"
+    });
+    res.json({ coins: novoSaldo, ganhos: quantidade });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao adicionar coins" });
+  }
+});
+
+app.post("/coins/resgatar", authMiddleware, async (req, res) => {
+  try {
+    const { quantidade } = req.body;
+    const uid = req.user.uid;
+    if (!quantidade || quantidade <= 0) {
+      return res.status(400).json({ erro: "Quantidade inválida" });
+    }
+    const TAXA_CONVERSAO = 0.05;
+    const { data, error } = await supabase.rpc("resgatar_atlax_coins", {
+      p_uid: uid,
+      p_coins: quantidade,
+      p_taxa: TAXA_CONVERSAO
+    });
+    if (error) return res.status(500).json({ erro: error.message });
+    if (data?.erro) return res.status(400).json({ erro: data.erro });
+    res.json({
+      ok: true,
+      valor_creditado: quantidade * TAXA_CONVERSAO,
+      novo_saldo: data.novo_saldo,
+      coins_restantes: data.coins_restantes
+    });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao resgatar" });
+  }
+});
+
+// ===== CONTAS MANUAIS (salvar no Supabase) =====
+app.post("/conta", authMiddleware, async (req, res) => {
+  try {
+    const { nome, saldo, item_id } = req.body;
+    const uid = req.user.uid;
+    await supabase.from("contas").insert({
+      uid,
+      nome,
+      saldo: Number(saldo || 0),
+      item_id: item_id || null,
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+app.get("/contas/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("contas").select("*").eq("uid", req.user.uid);
+  res.json(data || []);
+});
+
+app.put("/conta/:id", authMiddleware, async (req, res) => {
+  try {
+    const { saldo } = req.body;
+    const { id } = req.params;
+    const { error } = await supabase.from("contas").update({ saldo: Number(saldo) }).eq("id", id).eq("uid", req.user.uid);
+    if (error) return res.status(500).json({ erro: error.message });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+// ===== CARTÕES (transações manuais salvas no Supabase) =====
+app.post("/cartao", authMiddleware, async (req, res) => {
+  try {
+    const { descricao, valor, categoria } = req.body;
+    const uid = req.user.uid;
+    await supabase.from("cartoes").insert({
+      uid,
+      descricao,
+      valor: Number(valor),
+      categoria
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: e.message });
+  }
+});
+
+app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("cartoes").select("*").eq("uid", req.user.uid).order("criado_em", { ascending: false });
+  res.json(data || []);
+});
+
+// ===== BELVO - OPEN FINANCE =====
+// 1. Gerar token de conexão para o Widget
+app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const response = await axios.post(
+      `${BELVO_API_URL}/api/token/`,
+      {
+        id: req.user.uid,
+        scopes: "read_institutions,write_links,read_links"
+      },
+      BELVO_AUTH
+    );
+    res.json({ accessToken: response.data.access });
+  } catch (err) {
+    console.error("❌ Belvo Token:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao gerar token Belvo" });
+  }
+});
+
+// 2. Salvar link após conexão bem-sucedida no widget
+app.post("/belvo/salvar-link", authMiddleware, async (req, res) => {
+  try {
+    const { linkId, institution } = req.body;
+    const uid = req.user.uid;
+    // Insere uma nova conta bancária com o link_id
+    const { error } = await supabase.from("contas").insert({
+      uid,
+      nome: institution || "Banco Conectado",
+      item_id: linkId,
+      saldo: 0,
+    });
+    if (error) return res.status(500).json({ erro: error.message });
+    res.json({ ok: true, message: "Conta conectada com sucesso!" });
+  } catch (err) {
+    console.error("❌ Erro salvar link:", err.message);
+    res.status(500).json({ erro: "Erro ao processar conexão" });
+  }
+});
+
+// 3. Buscar contas de um link Belvo
+app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const { linkId } = req.params;
+    const response = await axios.get(
+      `${BELVO_API_URL}/api/accounts/?link=${linkId}`,
+      BELVO_AUTH
+    );
+    res.json(response.data.results);
+  } catch (err) {
+    console.error("❌ Erro buscar contas Belvo:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao buscar contas" });
+  }
+});
+
+// 4. Buscar transações de um link Belvo (útil para cartões e extratos)
+app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const { linkId } = req.params;
+    const response = await axios.get(
+      `${BELVO_API_URL}/api/transactions/?link=${linkId}`,
+      BELVO_AUTH
+    );
+    res.json(response.data.results);
+  } catch (err) {
+    console.error("❌ Erro buscar transações Belvo:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao buscar transações" });
+  }
+});
+
+// Webhook da Belvo (opcional, para atualizações automáticas)
+app.post("/webhook/belvo", async (req, res) => {
+  const { webhook_type, data } = req.body;
+  if (webhook_type === "links" && data.status === "valid") {
+    console.log("🔄 Link Belvo atualizado:", data.link_id);
+    // Aqui você poderia disparar uma atualização de saldos e transações
+  }
+  res.status(200).send("OK");
 });
 
 const PORT = process.env.PORT || 5000;
