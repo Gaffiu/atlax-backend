@@ -389,22 +389,30 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
 });
 
 // 2. Salvar link após conexão bem-sucedida no widget
-app.post("/belvo/salvar-link", authMiddleware, async (req, res) => {
+// 1. Gerar token de conexão para o Widget
+app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
+  // 🔍 Log de depuração temporário
+  console.log("🔑 BELVO_AUTH configurado:", BELVO_AUTH ? "SIM (OK)" : "NÃO (AUSENTE)");
+  
+  if (!BELVO_AUTH) {
+    console.error("❌ Variáveis BELVO_SECRET_ID e/ou BELVO_SECRET_PASSWORD não definidas no ambiente.");
+    return res.status(500).json({ erro: "Belvo não configurado" });
+  }
+
   try {
-    const { linkId, institution } = req.body;
-    const uid = req.user.uid;
-    // Insere uma nova conta bancária com o link_id
-    const { error } = await supabase.from("contas").insert({
-      uid,
-      nome: institution || "Banco Conectado",
-      item_id: linkId,
-      saldo: 0,
-    });
-    if (error) return res.status(500).json({ erro: error.message });
-    res.json({ ok: true, message: "Conta conectada com sucesso!" });
+    const response = await axios.post(
+      `${BELVO_API_URL}/api/token/`,
+      {
+        id: req.user.uid,
+        scopes: "read_institutions,write_links,read_links"
+      },
+      BELVO_AUTH
+    );
+    console.log("✅ Token Belvo gerado com sucesso para usuário:", req.user.uid);
+    res.json({ accessToken: response.data.access });
   } catch (err) {
-    console.error("❌ Erro salvar link:", err.message);
-    res.status(500).json({ erro: "Erro ao processar conexão" });
+    console.error("❌ Belvo Token:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao gerar token Belvo" });
   }
 });
 
