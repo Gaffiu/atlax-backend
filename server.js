@@ -368,6 +368,7 @@ app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
+// ===== BELVO - OPEN FINANCE =====
 // 1. Gerar token de conexão para o Widget (CORRIGIDO – envia credenciais no corpo)
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
@@ -389,15 +390,7 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
     );
     
     console.log("✅ Token Belvo gerado para usuário:", req.user.uid);
-    
-    // Construa a URL do widget
-    const widgetUrl = `https://widget.belvo.io/?access_token=${response.data.access}&locale=pt`;
-    
-    // Retorne o token e a URL para o front-end
-    res.json({ 
-      accessToken: response.data.access, 
-      widgetUrl: widgetUrl 
-    });
+    res.json({ accessToken: response.data.access });
     
   } catch (err) {
     console.error("❌ Erro Belvo Token:", {
@@ -406,6 +399,76 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
       message: err.message
     });
     res.status(500).json({ erro: "Erro ao gerar token Belvo" });
+  }
+});
+
+// 2. Webhook da Belvo (ATUALIZADO – salva conta automaticamente)
+app.post("/webhook/belvo", async (req, res) => {
+  const { webhook_type, data } = req.body;
+  
+  // Quando um link é criado ou atualizado
+  if (webhook_type === "links" && data && data.link_id) {
+    console.log("🔄 Webhook recebido para link:", data.link_id);
+    
+    try {
+      // Busca o link na API da Belvo para obter o nome da instituição
+      const linkResponse = await axios.get(
+        `${BELVO_API_URL}/api/links/${data.link_id}/`,
+        BELVO_AUTH
+      );
+      const institution = linkResponse.data.institution;
+      
+      // Salva a conta no Supabase
+      const { error } = await supabase.from("contas").insert({
+        uid: data.user_id, // Usa o user_id enviado no webhook
+        nome: institution || "Banco Conectado",
+        item_id: data.link_id,
+        saldo: 0
+      });
+      
+      if (error) {
+        console.error("❌ Erro ao salvar conta via webhook:", error.message);
+      } else {
+        console.log("✅ Conta salva automaticamente para usuário:", data.user_id);
+      }
+    } catch (err) {
+      console.error("❌ Erro ao processar webhook:", err.message);
+    }
+  }
+  
+  // Sempre retorna 200 para a Belvo
+  res.status(200).send("OK");
+});
+
+// 3. Buscar contas de um link Belvo
+app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const { linkId } = req.params;
+    const response = await axios.get(
+      `${BELVO_API_URL}/api/accounts/?link=${linkId}`,
+      BELVO_AUTH
+    );
+    res.json(response.data.results);
+  } catch (err) {
+    console.error("❌ Erro buscar contas Belvo:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao buscar contas" });
+  }
+});
+
+// 4. Buscar transações de um link Belvo (útil para cartões e extratos)
+app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const { linkId } = req.params;
+    const response = await axios.get(
+      `${BELVO_API_URL}/api/transactions/?link=${linkId}`,
+      BELVO_AUTH
+    );
+    res.json(response.data.results);
+  } catch (err) {
+    console.error("❌ Erro buscar transações Belvo:", err.response?.data || err.message);
+    res.status(500).json({ erro: "Erro ao buscar transações" });
   }
 });
 
