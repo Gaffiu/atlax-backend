@@ -1,32 +1,35 @@
+// services/ai.js
 const axios = require("axios");
-const { db } = require("../firebase");
+const supabase = require("../supabase");
 
 async function analisarUsuario(uid) {
-  const userRef = db.collection("users").doc(uid);
-  const userDoc = await userRef.get();
+  // Busca dados do usuário no Supabase
+  const { data: usuario, error: errUsuario } = await supabase
+    .from("usuarios")
+    .select("*")
+    .eq("id", uid)
+    .single();
 
-  if (!userDoc.exists) {
+  if (errUsuario || !usuario) {
     return "Nenhum dado financeiro encontrado.";
   }
 
-  const transacoesSnap = await db
-    .collection("transactions")
-    .where("uid", "==", uid)
-    .get();
-
-  const transacoes = transacoesSnap.docs.map(doc => doc.data());
-  const userData = userDoc.data();
+  // Busca transações recentes
+  const { data: transacoes } = await supabase
+    .from("transactions")
+    .select("*")
+    .eq("uid", uid)
+    .order("criado_em", { ascending: false })
+    .limit(20);
 
   const prompt = `
   Analise os dados financeiros do usuário:
 
-  Saldo: R$ ${userData.saldo}
+  Saldo: R$ ${usuario.saldo || 0}
+  Atlax Coins: ${usuario.atlax_coins || 0}
 
-  Investimentos:
-  ${JSON.stringify(userData.investimentos)}
-
-  Transações recentes (últimas 20):
-  ${JSON.stringify(transacoes.slice(0, 20))}
+  Transações recentes (últimas ${transacoes?.length || 0}):
+  ${JSON.stringify(transacoes || [])}
 
   Gere:
   - Uma análise financeira resumida
@@ -45,7 +48,7 @@ async function analisarUsuario(uid) {
     );
     return response.data.candidates[0].content.parts[0].text;
   } catch (err) {
-    console.error("Erro Gemini:", err);
+    console.error("Erro Gemini:", err.response?.data || err.message);
     return "Não foi possível realizar a análise no momento. Tente novamente mais tarde.";
   }
 }
