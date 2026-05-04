@@ -40,11 +40,10 @@ async function analisarUsuario(uid) {
   `;
 
   try {
+    // 🔁 MODELO CORRIGIDO: gemini-2.5-flash (gratuito e funcional)
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }]
-      }
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: prompt }] }] }
     );
     return response.data.candidates[0].content.parts[0].text;
   } catch (err) {
