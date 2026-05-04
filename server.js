@@ -260,7 +260,8 @@ app.post("/ia/perguntar", authMiddleware, async (req, res) => {
     if (!mensagem) return res.status(400).json({ resposta: "Digite uma pergunta." });
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      // 🔁 MODELO CORRIGIDO: gemini-2.5-flash
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         contents: [{ parts: [{ text: `Você é um assistente financeiro especializado. Responda de forma gentil, educativa e motivadora. Pergunta do usuário: ${mensagem}` }] }]
       }
