@@ -568,5 +568,38 @@ app.get("/noticias", async (req, res) => {
   }
 });
 
+// ===== COFRE DO TEMPO =====
+app.post("/cartas", authMiddleware, async (req, res) => {
+  try {
+    const { titulo, texto, data_abertura } = req.body;
+    const uid = req.user.uid;
+    const { error } = await supabase.from("cartas_tempo").insert({
+      uid,
+      titulo,
+      texto,
+      data_abertura
+    });
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("❌ Erro ao salvar carta:", e.message);
+    res.status(500).json({ erro: "Erro ao guardar a carta." });
+  }
+});
+
+app.get("/cartas/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from("cartas_tempo")
+      .select("*")
+      .eq("uid", req.user.uid)
+      .order("criada_em", { ascending: false });
+    res.json(data || []);
+  } catch (e) {
+    console.error("❌ Erro ao buscar cartas:", e.message);
+    res.status(500).json({ erro: "Erro ao carregar as cartas." });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
