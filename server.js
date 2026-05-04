@@ -388,30 +388,41 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   }
 });
 
-// 2. Salvar link após conexão bem-sucedida no widget
-// 1. Gerar token de conexão para o Widget
+// 2. Salvar link após conexão bem-sucedida no // 1. Gerar token de conexão para o Widget
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  // 🔍 Log de depuração temporário
-  console.log("🔑 BELVO_AUTH configurado:", BELVO_AUTH ? "SIM (OK)" : "NÃO (AUSENTE)");
+  // Log de depuração para confirmar que as variáveis estão acessíveis
+  console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
   
-  if (!BELVO_AUTH) {
-    console.error("❌ Variáveis BELVO_SECRET_ID e/ou BELVO_SECRET_PASSWORD não definidas no ambiente.");
+  if (!process.env.BELVO_SECRET_ID || !process.env.BELVO_SECRET_PASSWORD) {
+    console.error("❌ Variáveis BELVO_SECRET_ID e/ou BELVO_SECRET_PASSWORD não definidas.");
     return res.status(500).json({ erro: "Belvo não configurado" });
   }
 
   try {
+    // ✅ Envia as credenciais no CORPO da requisição, conforme documentação oficial
     const response = await axios.post(
       `${BELVO_API_URL}/api/token/`,
       {
-        id: req.user.uid,
+        id: process.env.BELVO_SECRET_ID,
+        password: process.env.BELVO_SECRET_PASSWORD,
         scopes: "read_institutions,write_links,read_links"
       },
-      BELVO_AUTH
+      {
+        headers: { "Content-Type": "application/json" }
+        // sem autenticação Basic aqui
+      }
     );
-    console.log("✅ Token Belvo gerado com sucesso para usuário:", req.user.uid);
+    
+    console.log("✅ Token Belvo gerado para usuário:", req.user.uid);
     res.json({ accessToken: response.data.access });
+    
   } catch (err) {
-    console.error("❌ Belvo Token:", err.response?.data || err.message);
+    // Log detalhado do erro da API da Belvo
+    console.error("❌ Erro Belvo Token:", {
+      status: err.response?.status,
+      data: err.response?.data,
+      message: err.message
+    });
     res.status(500).json({ erro: "Erro ao gerar token Belvo" });
   }
 });
