@@ -239,9 +239,39 @@ app.post("/saque", authMiddleware, async (req, res) => {
   }
 });
 
-app.post("/ia", authMiddleware, (req, res) => {
-  const { mensagem } = req.body;
-  res.json({ resposta: "Você disse: " + mensagem });
+// ===== ASSISTENTE IA (GEMINI) =====
+const { analisarUsuario } = require("./services/ai");
+
+// Análise financeira completa do usuário
+app.post("/ia/analisar", authMiddleware, async (req, res) => {
+  try {
+    const analise = await analisarUsuario(req.user.uid);
+    res.json({ resposta: analise });
+  } catch (err) {
+    console.error("❌ Erro ao analisar:", err.message);
+    res.status(500).json({ resposta: "Não foi possível realizar a análise agora. Tente novamente." });
+  }
+});
+
+// Chat livre com a IA
+app.post("/ia/perguntar", authMiddleware, async (req, res) => {
+  try {
+    const { mensagem } = req.body;
+    if (!mensagem) return res.status(400).json({ resposta: "Digite uma pergunta." });
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: [{ parts: [{ text: `Você é um assistente financeiro especializado. Responda de forma gentil, educativa e motivadora. Pergunta do usuário: ${mensagem}` }] }]
+      }
+    );
+
+    const texto = response.data.candidates[0].content.parts[0].text;
+    res.json({ resposta: texto });
+  } catch (err) {
+    console.error("❌ Erro Gemini:", err.response?.data || err.message);
+    res.json({ resposta: "Desculpe, ocorreu um erro ao processar sua pergunta. Tente novamente." });
+  }
 });
 
 // ===== ATLAX COINS (mantidas) =====
