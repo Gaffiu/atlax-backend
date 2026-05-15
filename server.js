@@ -263,7 +263,7 @@ app.post("/ia/perguntar", authMiddleware, async (req, res) => {
       // 🔁 MODELO CORRIGIDO: gemini-2.5-flash
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
-        contents: [{ parts: [{ text: `Você é um assistente financeiro especializado. Responda de forma gentil, educativa e motivadora. Pergunta do usuário: ${mensagem}` }] }]
+        contents: [{ parts: [{ text: `Você é um assistente financeiro especializado. Responda de forma CURTA, DIRETA e RESUMIDA, no máximo 3 frases. Seja gentil e motivador. Pergunta do usuário: ${mensagem}` }] }]
       }
     );
 
