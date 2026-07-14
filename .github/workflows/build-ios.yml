@@ -24,47 +24,42 @@ jobs:
         npm install @capacitor/core @capacitor/cli @capacitor/ios
         npm install -g @capacitor/cli
 
-    - name: List repository contents (debug)
-      run: |
-        echo "Root contents:"
-        ls -la
-        echo "Subdirectories:"
-        find . -maxdepth 2 -type f
-
     - name: Prepare web assets
       run: |
         mkdir -p www
-        # Habilita padrões estendidos
         shopt -s extglob
-        # Copia todos os arquivos e pastas, ignorando os desnecessários
         cp -r !(.git|.github|node_modules|www|ios) www/ 2>/dev/null || true
 
-        # Verifica se index.html existe na raiz de www
         if [ ! -f www/index.html ]; then
-          echo "index.html não encontrado na raiz de www. Procurando em subpastas..."
-          # Encontra o primeiro index.html fora de www
           HTML_FILE=$(find . -name "index.html" -not -path "./www/*" | head -1)
           if [ -n "$HTML_FILE" ]; then
             HTML_DIR=$(dirname "$HTML_FILE")
-            echo "Encontrado em $HTML_DIR, copiando conteúdo para www..."
             cp -r "$HTML_DIR"/* www/
           else
-            echo "ERRO: index.html não encontrado em lugar nenhum!"
+            echo "ERRO: index.html não encontrado!"
             exit 1
           fi
         fi
 
-        # Confirma que agora existe
-        if [ -f www/index.html ]; then
-          echo "✓ index.html pronto em www/"
-        else
-          echo "ERRO: Falha ao preparar index.html."
-          exit 1
-        fi
         ls -la www/
 
     - name: Add iOS platform
       run: npx cap add ios
+
+    - name: Set iOS deployment target to 13.0
+      run: |
+        cd ios/App
+        # Altera o deployment target no projeto Xcode
+        sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = 13.0/g' App.xcodeproj/project.pbxproj
+        # Também altera no Podfile, se necessário
+        if [ -f Podfile ]; then
+          sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '13.0'/g" Podfile
+        fi
+
+    - name: Install CocoaPods dependencies
+      run: |
+        cd ios/App
+        pod install --repo-update
 
     - name: Build unsigned IPA
       run: |
