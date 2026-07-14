@@ -1,0 +1,69 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # Permite rodar manualmente
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20'
+
+    - name: Install Capacitor and dependencies
+      run: |
+        npm init -y
+        npm install @capacitor/core @capacitor/cli @capacitor/ios
+        npm install -g @capacitor/cli
+
+    - name: Add iOS platform
+      run: npx cap add ios
+
+    - name: Import Apple ID credentials
+      uses: apple-actions/import-codesign-certs@v2
+      with:
+        keychain: "temp"
+        p12-file-base64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+        p12-password: ${{ secrets.P12_PASSWORD }}
+      continue-on-error: true
+
+    - name: Set up automatic signing with Apple ID
+      uses: apple-actions/setup-codesign@v1
+      with:
+        apple-id: ${{ secrets.APPLE_ID }}
+        apple-password: ${{ secrets.APPLE_PASSWORD }}
+        team-id: ""
+      continue-on-error: true
+
+    - name: Build IPA (assinar automaticamente)
+      run: |
+        cd ios/App
+        xcodebuild -workspace App.xcworkspace \
+                   -scheme App \
+                   -sdk iphoneos \
+                   -configuration Release \
+                   -archivePath $PWD/build/App.xcarchive \
+                   CODE_SIGN_STYLE=Automatic \
+                   DEVELOPMENT_TEAM="" \
+                   -allowProvisioningUpdates \
+                   archive
+        xcodebuild -exportArchive \
+                   -archivePath $PWD/build/App.xcarchive \
+                   -exportOptionsPlist $PWD/exportOptions.plist \
+                   -exportPath $PWD/build \
+                   CODE_SIGN_STYLE=Automatic \
+                   DEVELOPMENT_TEAM=""
+
+    - name: Upload IPA artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Atlax-AI.ipa
+        path: ios/App/build/*.ipa
