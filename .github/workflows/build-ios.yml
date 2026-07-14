@@ -1,9 +1,9 @@
-name: Build iOS IPA
+name: Build iOS IPA (Unsigned)
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:   # Permite rodar manualmente
+  workflow_dispatch:
 
 jobs:
   build:
@@ -27,43 +27,25 @@ jobs:
     - name: Add iOS platform
       run: npx cap add ios
 
-    - name: Import Apple ID credentials
-      uses: apple-actions/import-codesign-certs@v2
-      with:
-        keychain: "temp"
-        p12-file-base64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-        p12-password: ${{ secrets.P12_PASSWORD }}
-      continue-on-error: true
-
-    - name: Set up automatic signing with Apple ID
-      uses: apple-actions/setup-codesign@v1
-      with:
-        apple-id: ${{ secrets.APPLE_ID }}
-        apple-password: ${{ secrets.APPLE_PASSWORD }}
-        team-id: ""
-      continue-on-error: true
-
-    - name: Build IPA (assinar automaticamente)
+    - name: Build unsigned IPA
       run: |
         cd ios/App
+        # Compila sem assinatura
         xcodebuild -workspace App.xcworkspace \
                    -scheme App \
                    -sdk iphoneos \
                    -configuration Release \
-                   -archivePath $PWD/build/App.xcarchive \
-                   CODE_SIGN_STYLE=Automatic \
-                   DEVELOPMENT_TEAM="" \
-                   -allowProvisioningUpdates \
-                   archive
-        xcodebuild -exportArchive \
-                   -archivePath $PWD/build/App.xcarchive \
-                   -exportOptionsPlist $PWD/exportOptions.plist \
-                   -exportPath $PWD/build \
-                   CODE_SIGN_STYLE=Automatic \
-                   DEVELOPMENT_TEAM=""
+                   CODE_SIGN_IDENTITY="" \
+                   CODE_SIGNING_REQUIRED=NO \
+                   CODE_SIGNING_ALLOWED=NO
+        # Cria a estrutura Payload e gera o IPA
+        mkdir -p Payload
+        cp -r build/Release-iphoneos/App.app Payload/
+        zip -r AtlaxAI.ipa Payload
+        mv AtlaxAI.ipa build/
 
     - name: Upload IPA artifact
       uses: actions/upload-artifact@v4
       with:
-        name: Atlax-AI.ipa
-        path: ios/App/build/*.ipa
+        name: AtlaxAI-unsigned.ipa
+        path: ios/App/build/AtlaxAI.ipa
