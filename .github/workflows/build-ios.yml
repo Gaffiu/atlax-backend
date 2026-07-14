@@ -1,4 +1,4 @@
-name: Build iOS IPA (Unsigned) with Diagnostics
+name: Build iOS IPA (Unsigned) - Final Fix
 
 on:
   push:
@@ -18,13 +18,13 @@ jobs:
       with:
         node-version: '20'
 
-    - name: Install Capacitor 5.0.0 (compatible with iOS 13)
+    - name: Install Capacitor 5.0.0
       run: |
         npm init -y
         npm install @capacitor/core@5.0.0 @capacitor/cli@5.0.0 @capacitor/ios@5.0.0
         npm install -g @capacitor/cli@5.0.0
 
-    - name: Prepare web assets
+    - name: Prepare web assets in www
       run: |
         mkdir -p www
         shopt -s extglob
@@ -41,29 +41,28 @@ jobs:
           fi
         fi
 
-        # Ajusta capacitor.config.json para carregamento local (sem server)
+        # Garante capacitor.config.json em www (sem chave server)
         if [ -f capacitor.config.json ]; then
           cp capacitor.config.json www/
-          # Remove a chave "server" inteira para evitar problemas
-          cat www/capacitor.config.json | grep -v '"server"' | grep -v '"iosScheme"' > tmp.json
-          echo '}' >> tmp.json
-          mv tmp.json www/capacitor.config.json
         fi
 
-        echo "Conteúdo de www:"
+        echo "✅ Conteúdo final de www:"
         ls -laR www/
 
-    - name: Add iOS platform
-      run: npx cap add ios
+    - name: Add iOS platform and sync web assets
+      run: |
+        npx cap add ios
+        npx cap sync ios
 
-    - name: Verify public folder
+    - name: Verify that public folder is populated
       run: |
         echo "Verificando ios/App/App/public:"
-        ls -laR ios/App/App/public/ || echo "Pasta public não encontrada!"
-        # Garante que capacitor.config.json está na raiz do projeto iOS
-        if [ -f www/capacitor.config.json ]; then
-          cp www/capacitor.config.json ios/App/App/
-        fi
+        ls -laR ios/App/App/public/
+
+    - name: Allow arbitrary loads (Firebase, fonts, APIs)
+      run: |
+        cd ios/App/App
+        /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" Info.plist 2>/dev/null || true
 
     - name: Set iOS deployment target to 13.0
       run: |
@@ -71,7 +70,6 @@ jobs:
         sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = 13.0/g' App.xcodeproj/project.pbxproj
         if [ -f Podfile ]; then
           sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '13.0'/g" Podfile
-          sed -i '' "s/\(target '[^']*' do\)/\1\n  platform :ios, '13.0'/g" Podfile
         fi
 
     - name: Install CocoaPods dependencies
@@ -99,11 +97,16 @@ jobs:
           exit 1
         fi
         echo "App.app encontrado em: $APP_PATH"
-        # Verifica se o conteúdo web está dentro do .app
-        echo "Conteúdo do .app:"
-        ls -la "$APP_PATH/"
+
         echo "Conteúdo da pasta public dentro do .app:"
         ls -la "$APP_PATH/public/" || echo "Pasta public não encontrada dentro do .app!"
+
+        # Se a pasta public não existir, copie manualmente do projeto
+        if [ ! -d "$APP_PATH/public" ]; then
+          echo "Copiando public manualmente..."
+          cp -r ios/App/App/public "$APP_PATH/public"
+        fi
+
         mkdir -p Payload
         cp -r "$APP_PATH" Payload/
         zip -r AtlaxAI.ipa Payload
