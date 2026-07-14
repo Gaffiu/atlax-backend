@@ -18,11 +18,11 @@ jobs:
       with:
         node-version: '20'
 
-    - name: Install Capacitor and dependencies
+    - name: Install Capacitor 5 (compatible with iOS 13)
       run: |
         npm init -y
-        npm install @capacitor/core @capacitor/cli @capacitor/ios
-        npm install -g @capacitor/cli
+        npm install @capacitor/core@5 @capacitor/cli@5 @capacitor/ios@5
+        npm install -g @capacitor/cli@5
 
     - name: Prepare web assets
       run: |
@@ -51,7 +51,7 @@ jobs:
         cd ios/App
         # Altera o deployment target no projeto Xcode
         sed -i '' 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = 13.0/g' App.xcodeproj/project.pbxproj
-        # Também altera no Podfile, se necessário
+        # Altera no Podfile também
         if [ -f Podfile ]; then
           sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '13.0'/g" Podfile
         fi
