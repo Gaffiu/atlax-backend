@@ -63,24 +63,33 @@ jobs:
       run: |
         cd ios/App
         pod install --repo-update
-      # Esta etapa falhará se o pod install não funcionar
 
-    - name: Build unsigned IPA
+    - name: Build app with xcodebuild
       run: |
         cd ios/App
-        # Compila usando o workspace gerado pelo pod install
         xcodebuild -workspace App.xcworkspace \
                    -scheme App \
                    -sdk iphoneos \
                    -configuration Release \
+                   -derivedDataPath build/DerivedData \
                    CODE_SIGN_IDENTITY="" \
                    CODE_SIGNING_REQUIRED=NO \
                    CODE_SIGNING_ALLOWED=NO
-        # Empacota o .app em um IPA
+
+    - name: Locate and package IPA
+      run: |
+        # Procura o .app dentro do DerivedData
+        APP_PATH=$(find ios/App/build/DerivedData -name "App.app" -type d | head -1)
+        if [ -z "$APP_PATH" ]; then
+          echo "ERRO: App.app não encontrado!"
+          exit 1
+        fi
+        echo "Encontrado: $APP_PATH"
+        # Cria a estrutura Payload
         mkdir -p Payload
-        cp -r build/Release-iphoneos/App.app Payload/
+        cp -r "$APP_PATH" Payload/
         zip -r AtlaxAI.ipa Payload
-        mv AtlaxAI.ipa build/
+        mv AtlaxAI.ipa ios/App/build/
 
     - name: Upload IPA artifact
       uses: actions/upload-artifact@v4
