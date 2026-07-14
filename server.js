@@ -599,5 +599,67 @@ app.get("/cartas/:uid", authMiddleware, async (req, res) => {
   }
 });
 
+// ===== PERFIL DO USUÁRIO =====
+
+// Buscar perfil
+app.get("/perfil/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("usuarios")
+      .select("nome, email, telefone, foto, bio")
+      .eq("id", req.user.uid)
+      .single();
+
+    if (error || !data) {
+      return res.json({
+        nome: "",
+        email: "",
+        telefone: "",
+        foto: "",
+        bio: ""
+      });
+    }
+
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Erro ao buscar perfil:", err.message);
+    res.status(500).json({ erro: "Erro ao buscar perfil" });
+  }
+});
+
+// Atualizar perfil
+app.put("/perfil/:uid", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { nome, email, telefone, foto, bio } = req.body;
+
+    const updates = {};
+    if (nome !== undefined) updates.nome = nome;
+    if (email !== undefined) updates.email = email;
+    if (telefone !== undefined) updates.telefone = telefone;
+    if (foto !== undefined) updates.foto = foto;
+    if (bio !== undefined) updates.bio = bio;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ erro: "Nenhum campo para atualizar" });
+    }
+
+    // Garante que o usuário existe
+    await supabase.from("usuarios").upsert({ id: uid }, { onConflict: "id" });
+
+    const { error } = await supabase
+      .from("usuarios")
+      .update(updates)
+      .eq("id", uid);
+
+    if (error) throw error;
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("❌ Erro ao atualizar perfil:", err.message);
+    res.status(500).json({ erro: "Erro ao atualizar perfil" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
