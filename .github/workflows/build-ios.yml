@@ -1,4 +1,4 @@
-name: Build iOS IPA (Unsigned)
+name: Build iOS IPA (Unsigned) with Diagnostics
 
 on:
   push:
@@ -41,14 +41,29 @@ jobs:
           fi
         fi
 
+        # Ajusta capacitor.config.json para carregamento local (sem server)
         if [ -f capacitor.config.json ]; then
           cp capacitor.config.json www/
+          # Remove a chave "server" inteira para evitar problemas
+          cat www/capacitor.config.json | grep -v '"server"' | grep -v '"iosScheme"' > tmp.json
+          echo '}' >> tmp.json
+          mv tmp.json www/capacitor.config.json
         fi
 
-        ls -la www/
+        echo "Conteúdo de www:"
+        ls -laR www/
 
     - name: Add iOS platform
       run: npx cap add ios
+
+    - name: Verify public folder
+      run: |
+        echo "Verificando ios/App/App/public:"
+        ls -laR ios/App/App/public/ || echo "Pasta public não encontrada!"
+        # Garante que capacitor.config.json está na raiz do projeto iOS
+        if [ -f www/capacitor.config.json ]; then
+          cp www/capacitor.config.json ios/App/App/
+        fi
 
     - name: Set iOS deployment target to 13.0
       run: |
@@ -78,14 +93,17 @@ jobs:
 
     - name: Locate and package IPA
       run: |
-        # Procura o .app dentro do DerivedData
         APP_PATH=$(find ios/App/build/DerivedData -name "App.app" -type d | head -1)
         if [ -z "$APP_PATH" ]; then
           echo "ERRO: App.app não encontrado!"
           exit 1
         fi
-        echo "Encontrado: $APP_PATH"
-        # Cria a estrutura Payload
+        echo "App.app encontrado em: $APP_PATH"
+        # Verifica se o conteúdo web está dentro do .app
+        echo "Conteúdo do .app:"
+        ls -la "$APP_PATH/"
+        echo "Conteúdo da pasta public dentro do .app:"
+        ls -la "$APP_PATH/public/" || echo "Pasta public não encontrada dentro do .app!"
         mkdir -p Payload
         cp -r "$APP_PATH" Payload/
         zip -r AtlaxAI.ipa Payload
