@@ -24,17 +24,37 @@ jobs:
         npm install @capacitor/core @capacitor/cli @capacitor/ios
         npm install -g @capacitor/cli
 
-    - name: Prepare web assets
+    - name: List repository contents (debug)
+      run: |
+        echo "Root contents:"
+        ls -la
+        echo "Subdirectories:"
+        find . -maxdepth 2 -type f
+
+    - name: Prepare web assets (robust copy)
       run: |
         mkdir -p www
-        # Copia todos os arquivos do projeto para a pasta www
-        cp *.html www/
-        cp -r css www/
-        cp -r js www/
-        cp -r img www/ 2>/dev/null || true
-        cp -r audio www/ 2>/dev/null || true
-        # Verifica se o index.html está presente
-        ls www/
+        # Copia todos os arquivos e pastas, ignorando .git, .github, node_modules, www, ios
+        shopt -s extglob
+        cp -r !(.git|.github|node_modules|www|ios) www/ 2>/dev/null || true
+        # Garante que o index.html está na raiz de www ou copia de algum subdiretório
+        if [ ! -f www/index.html ]; then
+          echo "index.html não encontrado na raiz, procurando..."
+          find . -name "index.html" -not -path "./www/*" -exec cp --parents {} www/ \; 2>/dev/null || true
+          if [ -d www/*/ ]; then
+            # Move conteúdo do subdiretório para a raiz de www
+            find www -mindepth 2 -maxdepth 2 -type f -exec mv {} www/ \; 2>/dev/null || true
+            find www -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+          fi
+        fi
+        # Verifica se www/index.html existe agora
+        if [ -f www/index.html ]; then
+          echo "✓ index.html encontrado em www/"
+        else
+          echo "ERRO: index.html não encontrado! Verifique a estrutura do repositório."
+          exit 1
+        fi
+        ls -la www/
 
     - name: Add iOS platform
       run: npx cap add ios
