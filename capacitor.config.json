@@ -1,7 +1,7 @@
 {
   "appId": "com.atlax.ai",
   "appName": "Atlax AI",
-  "webDir": ".",
+  "webDir": "www",
   "server": {
     "iosScheme": "https"
   },
