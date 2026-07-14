@@ -31,27 +31,34 @@ jobs:
         echo "Subdirectories:"
         find . -maxdepth 2 -type f
 
-    - name: Prepare web assets (robust copy)
+    - name: Prepare web assets
       run: |
         mkdir -p www
-        # Copia todos os arquivos e pastas, ignorando .git, .github, node_modules, www, ios
+        # Habilita padrões estendidos
         shopt -s extglob
+        # Copia todos os arquivos e pastas, ignorando os desnecessários
         cp -r !(.git|.github|node_modules|www|ios) www/ 2>/dev/null || true
-        # Garante que o index.html está na raiz de www ou copia de algum subdiretório
+
+        # Verifica se index.html existe na raiz de www
         if [ ! -f www/index.html ]; then
-          echo "index.html não encontrado na raiz, procurando..."
-          find . -name "index.html" -not -path "./www/*" -exec cp --parents {} www/ \; 2>/dev/null || true
-          if [ -d www/*/ ]; then
-            # Move conteúdo do subdiretório para a raiz de www
-            find www -mindepth 2 -maxdepth 2 -type f -exec mv {} www/ \; 2>/dev/null || true
-            find www -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+          echo "index.html não encontrado na raiz de www. Procurando em subpastas..."
+          # Encontra o primeiro index.html fora de www
+          HTML_FILE=$(find . -name "index.html" -not -path "./www/*" | head -1)
+          if [ -n "$HTML_FILE" ]; then
+            HTML_DIR=$(dirname "$HTML_FILE")
+            echo "Encontrado em $HTML_DIR, copiando conteúdo para www..."
+            cp -r "$HTML_DIR"/* www/
+          else
+            echo "ERRO: index.html não encontrado em lugar nenhum!"
+            exit 1
           fi
         fi
-        # Verifica se www/index.html existe agora
+
+        # Confirma que agora existe
         if [ -f www/index.html ]; then
-          echo "✓ index.html encontrado em www/"
+          echo "✓ index.html pronto em www/"
         else
-          echo "ERRO: index.html não encontrado! Verifique a estrutura do repositório."
+          echo "ERRO: Falha ao preparar index.html."
           exit 1
         fi
         ls -la www/
