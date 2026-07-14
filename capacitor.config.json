@@ -1,0 +1,11 @@
+{
+  "appId": "com.atlax.ai",
+  "appName": "Atlax AI",
+  "webDir": ".",
+  "server": {
+    "iosScheme": "https"
+  },
+  "ios": {
+    "contentInset": "always"
+  }
+}
