@@ -661,5 +661,241 @@ app.get("/carteira/:uid", authMiddleware, async (req, res) => {
   }
 });
 
+// ===== RESGATE PARCIAL =====
+app.post("/resgatar-fundo-parcial", authMiddleware, async (req, res) => {
+  try {
+    const { investimento_id, cotas_a_resgatar } = req.body;
+    const uid = req.user.uid;
+
+    // Buscar investimento
+    const { data: inv, error } = await supabase
+      .from("investimentos")
+      .select("*, fundos(*)")
+      .eq("id", investimento_id)
+      .eq("uid", uid)
+      .single();
+
+    if (error || !inv || inv.status !== "ativo") {
+      return res.status(400).json({ erro: "Investimento não encontrado ou já resgatado" });
+    }
+
+    if (cotas_a_resgatar > inv.cotas) {
+      return res.status(400).json({ erro: "Quantidade de cotas insuficiente" });
+    }
+
+    const valor_cota_atual = await obterPrecoAtual(inv.fundos.ticker);
+    const valor_resgate = cotas_a_resgatar * valor_cota_atual;
+
+    // Atualiza saldo do usuário
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    await supabase.from("usuarios").update({ saldo: user.saldo + valor_resgate }).eq("id", uid);
+
+    // Se for resgate total, marca como resgatado; senão, apenas subtrai as cotas
+    if (cotas_a_resgatar === inv.cotas) {
+      await supabase.from("investimentos").update({
+        status: "resgatado",
+        data_resgate: new Date(),
+        cotas: 0
+      }).eq("id", investimento_id);
+    } else {
+      await supabase.from("investimentos").update({
+        cotas: inv.cotas - cotas_a_resgatar,
+        valor_aplicado: inv.valor_aplicado - valor_resgate
+      }).eq("id", investimento_id);
+    }
+
+    // Registra evento
+    await supabase.from("eventos_investimento").insert({
+      investimento_id,
+      tipo: cotas_a_resgatar === inv.cotas ? "resgate_total" : "resgate_parcial",
+      valor: valor_resgate,
+      cotas: cotas_a_resgatar
+    });
+
+    // Registra transação
+    await supabase.from("transactions").insert({
+      uid,
+      tipo: "resgate",
+      valor: valor_resgate,
+      status: "aprovado"
+    });
+
+    res.json({ ok: true, valor_resgate, cotas_restantes: inv.cotas - cotas_a_resgatar });
+  } catch (err) {
+    console.error("Erro ao resgatar parcialmente:", err.message);
+    res.status(500).json({ erro: "Erro interno ao resgatar" });
+  }
+});
+
+// ===== APORTES AUTOMÁTICOS =====
+app.post("/aporte-automatico", authMiddleware, async (req, res) => {
+  try {
+    const { fundo_id, valor, periodicidade, dia_do_mes } = req.body;
+    const uid = req.user.uid;
+
+    await supabase.from("aportes_automaticos").insert({
+      uid,
+      fundo_id,
+      valor,
+      periodicidade,
+      dia_do_mes
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao criar aporte automático" });
+  }
+});
+
+app.get("/aportes-automaticos/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("aportes_automaticos").select("*, fundos(*)").eq("uid", req.user.uid);
+  res.json(data || []);
+});
+
+app.delete("/aporte-automatico/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  await supabase.from("aportes_automaticos").delete().eq("id", id).eq("uid", req.user.uid);
+  res.json({ ok: true });
+});
+
+// ===== ORDENS AUTOMÁTICAS =====
+app.post("/ordem-automatica", authMiddleware, async (req, res) => {
+  try {
+    const { fundo_id, tipo, rentabilidade_acionadora } = req.body;
+    const uid = req.user.uid;
+
+    await supabase.from("ordens_automaticas").insert({
+      uid,
+      fundo_id,
+      tipo,
+      rentabilidade_acionadora
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao criar ordem automática" });
+  }
+});
+
+app.get("/ordens-automaticas/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("ordens_automaticas").select("*, fundos(*)").eq("uid", req.user.uid);
+  res.json(data || []);
+});
+
+app.delete("/ordem-automatica/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  await supabase.from("ordens_automaticas").delete().eq("id", id).eq("uid", req.user.uid);
+  res.json({ ok: true });
+});
+
+// ===== CERTIFICADO DE INVESTIMENTO =====
+app.get("/certificado-investimento/:investimento_id", authMiddleware, async (req, res) => {
+  try {
+    const { investimento_id } = req.params;
+    const uid = req.user.uid;
+
+    const { data: inv, error } = await supabase
+      .from("investimentos")
+      .select("*, fundos(*)")
+      .eq("id", investimento_id)
+      .eq("uid", uid)
+      .single();
+
+    if (error || !inv) {
+      return res.status(404).json({ erro: "Investimento não encontrado" });
+    }
+
+    res.json({
+      nome_fundo: inv.fundos.nome,
+      ticker: inv.fundos.ticker,
+      valor_aplicado: inv.valor_aplicado,
+      cotas: inv.cotas,
+      data_aplicacao: inv.data_aplicacao,
+      cnpj: inv.fundos.cnpj,
+      gestor: inv.fundos.gestor,
+      benchmark: inv.fundos.benchmark
+    });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao gerar certificado" });
+  }
+});
+
+// ===== COMPARADOR MÚLTIPLO (atualizado para aceitar vários tickers) =====
+app.get("/comparar-fundos", async (req, res) => {
+  try {
+    const tickers = req.query.tickers; // ex: HGLG11,KNRI11,MXRF11
+    if (!tickers) return res.status(400).json({ erro: "Informe os tickers" });
+
+    const tickerList = tickers.split(",");
+    const { data } = await supabase.from("fundos").select("*").in("ticker", tickerList);
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao comparar fundos" });
+  }
+});
+
+// ===== ROTA DE COTAÇÃO EM TEMPO REAL (via Brapi) =====
+app.get("/cotacao/:ticker", async (req, res) => {
+  try {
+    const ticker = req.params.ticker;
+    const preco = await obterPrecoAtual(ticker);
+    res.json({ ticker, preco });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro ao buscar cotação" });
+  }
+});
+
+// ===== PROCESSADOR DE APORTES AUTOMÁTICOS (executar a cada hora) =====
+async function processarAportesAutomaticos() {
+  const hoje = new Date();
+  const diaDoMes = hoje.getDate();
+  const diaDaSemana = hoje.getDay(); // 0 = domingo
+
+  // Busca aportes ativos
+  const { data: aportes } = await supabase.from("aportes_automaticos").select("*").eq("ativo", true);
+
+  for (const aporte of aportes) {
+    let deveExecutar = false;
+    if (aporte.periodicidade === "diaria") deveExecutar = true;
+    if (aporte.periodicidade === "semanal" && diaDaSemana === 1) deveExecutar = true; // segunda
+    if (aporte.periodicidade === "mensal" && diaDoMes === aporte.dia_do_mes) deveExecutar = true;
+
+    if (deveExecutar) {
+      // Verifica saldo do usuário
+      const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", aporte.uid).single();
+      if (user && user.saldo >= aporte.valor) {
+        // Realiza o investimento automaticamente usando a mesma lógica da rota /investir-fundo
+        try {
+          const { data: fundo } = await supabase.from("fundos").select("*").eq("id", aporte.fundo_id).single();
+          const valor_cota = await obterPrecoAtual(fundo.ticker);
+          const cotas = aporte.valor / valor_cota;
+
+          await supabase.from("usuarios").update({ saldo: user.saldo - aporte.valor }).eq("id", aporte.uid);
+          await supabase.from("investimentos").insert({
+            uid: aporte.uid,
+            fundo_id: aporte.fundo_id,
+            valor_aplicado: aporte.valor,
+            cotas,
+            valor_cota_entrada: valor_cota
+          });
+          await supabase.from("transactions").insert({
+            uid: aporte.uid,
+            tipo: "investimento",
+            valor: aporte.valor,
+            status: "aprovado",
+            categoria: fundo.ticker
+          });
+          console.log(`Aporte automático executado para ${aporte.uid} no fundo ${fundo.ticker}`);
+        } catch (e) {
+          console.error("Erro ao processar aporte automático:", e.message);
+        }
+      }
+    }
+  }
+}
+
+// Executa a cada hora
+setInterval(processarAportesAutomaticos, 60 * 60 * 1000);
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
