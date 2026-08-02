@@ -242,7 +242,6 @@ app.post("/saque", authMiddleware, async (req, res) => {
 // ===== ASSISTENTE IA (GEMINI) =====
 const { analisarUsuario } = require("./services/ai");
 
-// Análise financeira completa do usuário
 app.post("/ia/analisar", authMiddleware, async (req, res) => {
   try {
     const analise = await analisarUsuario(req.user.uid);
@@ -253,7 +252,6 @@ app.post("/ia/analisar", authMiddleware, async (req, res) => {
   }
 });
 
-// Chat livre com a IA
 app.post("/ia/perguntar", authMiddleware, async (req, res) => {
   try {
     const { mensagem } = req.body;
@@ -274,7 +272,7 @@ app.post("/ia/perguntar", authMiddleware, async (req, res) => {
   }
 });
 
-// ===== ATLAX COINS (mantidas) =====
+// ===== ATLAX COINS =====
 app.get("/coins/:uid", authMiddleware, async (req, res) => {
   try {
     const { data } = await supabase
@@ -342,7 +340,7 @@ app.post("/coins/resgatar", authMiddleware, async (req, res) => {
   }
 });
 
-// ===== CONTAS MANUAIS (salvar no Supabase) =====
+// ===== CONTAS MANUAIS =====
 app.post("/conta", authMiddleware, async (req, res) => {
   try {
     const { nome, saldo, item_id } = req.body;
@@ -376,7 +374,7 @@ app.put("/conta/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// ===== CARTÕES (transações manuais salvas no Supabase) =====
+// ===== CARTÕES =====
 app.post("/cartao", authMiddleware, async (req, res) => {
   try {
     const { descricao, valor, categoria } = req.body;
@@ -400,81 +398,47 @@ app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
 
 // ===== BELVO - OPEN FINANCE =====
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
-  
   if (!process.env.BELVO_SECRET_ID || !process.env.BELVO_SECRET_PASSWORD) {
-    console.error("❌ Variáveis BELVO_SECRET_ID e/ou BELVO_SECRET_PASSWORD não definidas.");
     return res.status(500).json({ erro: "Belvo não configurado" });
   }
-
   try {
-    const response = await axios.post(
-      `${BELVO_API_URL}/api/token/`,
-      {
-        id: process.env.BELVO_SECRET_ID,
-        password: process.env.BELVO_SECRET_PASSWORD,
-        scopes: "read_institutions,write_links,read_links"
-      },
-      { headers: { "Content-Type": "application/json" } }
-    );
-    
-    console.log("✅ Token Belvo gerado para usuário:", req.user.uid);
+    const response = await axios.post(`${BELVO_API_URL}/api/token/`, {
+      id: process.env.BELVO_SECRET_ID,
+      password: process.env.BELVO_SECRET_PASSWORD,
+      scopes: "read_institutions,write_links,read_links"
+    }, { headers: { "Content-Type": "application/json" } });
     res.json({ accessToken: response.data.access });
-    
   } catch (err) {
-    console.error("❌ Erro Belvo Token:", {
-      status: err.response?.status,
-      data: err.response?.data,
-      message: err.message
-    });
+    console.error("❌ Erro Belvo Token:", err.response?.status);
     res.status(500).json({ erro: "Erro ao gerar token Belvo" });
   }
 });
 
 app.post("/webhook/belvo", async (req, res) => {
   const { webhook_type, data } = req.body;
-  
-  if (webhook_type === "links" && data && data.link_id) {
-    console.log("🔄 Webhook recebido para link:", data.link_id);
-    
+  if (webhook_type === "links" && data?.link_id) {
     try {
-      const linkResponse = await axios.get(
-        `${BELVO_API_URL}/api/links/${data.link_id}/`,
-        BELVO_AUTH
-      );
+      const linkResponse = await axios.get(`${BELVO_API_URL}/api/links/${data.link_id}/`, BELVO_AUTH);
       const institution = linkResponse.data.institution;
-      
-      const { error } = await supabase.from("contas").insert({
+      await supabase.from("contas").insert({
         uid: data.user_id,
         nome: institution || "Banco Conectado",
         item_id: data.link_id,
         saldo: 0
       });
-      
-      if (error) {
-        console.error("❌ Erro ao salvar conta via webhook:", error.message);
-      } else {
-        console.log("✅ Conta salva automaticamente para usuário:", data.user_id);
-      }
     } catch (err) {
       console.error("❌ Erro ao processar webhook:", err.message);
     }
   }
-  
   res.status(200).send("OK");
 });
 
 app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
-    const { linkId } = req.params;
-    const response = await axios.get(
-      `${BELVO_API_URL}/api/accounts/?link=${linkId}`,
-      BELVO_AUTH
-    );
+    const response = await axios.get(`${BELVO_API_URL}/api/accounts/?link=${req.params.linkId}`, BELVO_AUTH);
     res.json(response.data.results);
   } catch (err) {
-    console.error("❌ Erro buscar contas Belvo:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao buscar contas" });
   }
 });
@@ -482,14 +446,9 @@ app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
 app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
-    const { linkId } = req.params;
-    const response = await axios.get(
-      `${BELVO_API_URL}/api/transactions/?link=${linkId}`,
-      BELVO_AUTH
-    );
+    const response = await axios.get(`${BELVO_API_URL}/api/transactions/?link=${req.params.linkId}`, BELVO_AUTH);
     res.json(response.data.results);
   } catch (err) {
-    console.error("❌ Erro buscar transações Belvo:", err.response?.data || err.message);
     res.status(500).json({ erro: "Erro ao buscar transações" });
   }
 });
@@ -497,21 +456,11 @@ app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
 app.get("/belvo/cartoes-contas/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
-    const { linkId } = req.params;
-    const response = await axios.get(
-      `${BELVO_API_URL}/api/accounts/?link=${linkId}`,
-      BELVO_AUTH
-    );
+    const response = await axios.get(`${BELVO_API_URL}/api/accounts/?link=${req.params.linkId}`, BELVO_AUTH);
     const contasCredito = response.data.results.filter(acc => acc.category === "CREDIT_CARD");
-    
-    if (contasCredito.length === 0) {
-      return res.json({ encontradas: false, mensagem: "Nenhum cartão de crédito encontrado neste banco." });
-    }
-    
-    res.json({ encontradas: true, cartoes: contasCredito });
+    res.json({ encontradas: contasCredito.length > 0, cartoes: contasCredito });
   } catch (err) {
-    console.error("❌ Erro buscar contas de cartão:", err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao buscar contas de cartão de crédito" });
+    res.status(500).json({ erro: "Erro ao buscar cartões" });
   }
 });
 
@@ -520,42 +469,29 @@ app.get("/belvo/faturas/:linkId/:accountId", authMiddleware, async (req, res) =>
   try {
     const { linkId, accountId } = req.params;
     const hoje = new Date().toISOString().split('T')[0];
-    const mesPassado = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
-    const response = await axios.get(
-      `${BELVO_API_URL}/api/transactions/?link=${linkId}&account=${accountId}&date_from=${mesPassado}&date_to=${hoje}`,
-      BELVO_AUTH
-    );
+    const mesPassado = new Date(Date.now() - 30*24*60*60*1000).toISOString().split('T')[0];
+    const response = await axios.get(`${BELVO_API_URL}/api/transactions/?link=${linkId}&account=${accountId}&date_from=${mesPassado}&date_to=${hoje}`, BELVO_AUTH);
     res.json(response.data.results);
   } catch (err) {
-    console.error("❌ Erro buscar faturas:", err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao buscar faturas do cartão" });
+    res.status(500).json({ erro: "Erro ao buscar faturas" });
   }
 });
 
-// ===== NOVA ROTA DE NOTÍCIAS DO MERCADO (ALPHA VANTAGE) =====
+// ===== NOTÍCIAS DO MERCADO =====
 app.get("/noticias", async (req, res) => {
-  if (!ALPHA_VANTAGE_API_KEY) {
-    return res.json([{ title: "API de notícias não configurada", url: "#" }]);
-  }
+  if (!ALPHA_VANTAGE_API_KEY) return res.json([]);
   try {
     const response = await axios.get("https://www.alphavantage.co/query", {
-      params: {
-        function: "NEWS_SENTIMENT",
-        topics: "finance, economy",
-        apikey: ALPHA_VANTAGE_API_KEY
-      }
+      params: { function: "NEWS_SENTIMENT", topics: "finance, economy", apikey: ALPHA_VANTAGE_API_KEY }
     });
     const feed = response.data?.feed || [];
-    const noticias = feed.slice(0, 10).map(item => ({
+    res.json(feed.slice(0, 10).map(item => ({
       title: item.title,
       summary: item.summary,
       url: item.url,
       source: item.source
-    }));
-    res.json(noticias);
+    })));
   } catch (err) {
-    console.error("❌ Erro ao buscar notícias:", err.message);
     res.json([]);
   }
 });
@@ -564,50 +500,27 @@ app.get("/noticias", async (req, res) => {
 app.post("/cartas", authMiddleware, async (req, res) => {
   try {
     const { titulo, texto, data_abertura } = req.body;
-    const uid = req.user.uid;
-    console.log("💾 Salvando carta para", uid, titulo);
-    const { error } = await supabase.from("cartas_tempo").insert({
-      uid, titulo, texto, data_abertura
+    await supabase.from("cartas_tempo").insert({
+      uid: req.user.uid, titulo, texto, data_abertura
     });
-    if (error) throw error;
     res.json({ ok: true });
   } catch (e) {
-    console.error("❌ Erro ao salvar carta:", e.message);
-    res.status(500).json({ erro: "Erro ao guardar a carta." });
+    res.status(500).json({ erro: e.message });
   }
 });
 
 app.get("/cartas/:uid", authMiddleware, async (req, res) => {
-  try {
-    const { data } = await supabase
-      .from("cartas_tempo")
-      .select("*")
-      .eq("uid", req.user.uid)
-      .order("criada_em", { ascending: false });
-    res.json(data || []);
-  } catch (e) {
-    console.error("❌ Erro ao buscar cartas:", e.message);
-    res.status(500).json({ erro: "Erro ao carregar as cartas." });
-  }
+  const { data } = await supabase.from("cartas_tempo").select("*").eq("uid", req.user.uid).order("criada_em", { ascending: false });
+  res.json(data || []);
 });
 
 // ===== PERFIL DO USUÁRIO =====
 app.get("/perfil/:uid", authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from("usuarios")
-      .select("nome, email, telefone, foto, bio")
-      .eq("id", req.user.uid)
-      .single();
-
-    if (error || !data) {
-      return res.json({ nome: "", email: "", telefone: "", foto: "", bio: "" });
-    }
-
-    res.json(data);
+    const { data } = await supabase.from("usuarios").select("nome, email, telefone, foto, bio").eq("id", req.user.uid).single();
+    res.json(data || { nome: "", email: "", telefone: "", foto: "", bio: "" });
   } catch (err) {
-    console.error("❌ Erro ao buscar perfil:", err.message);
-    res.status(500).json({ erro: "Erro ao buscar perfil" });
+    res.status(500).json({ erro: err.message });
   }
 });
 
@@ -615,199 +528,135 @@ app.put("/perfil/:uid", authMiddleware, async (req, res) => {
   try {
     const uid = req.user.uid;
     const { nome, email, telefone, foto, bio } = req.body;
-
     const updates = {};
     if (nome !== undefined) updates.nome = nome;
     if (email !== undefined) updates.email = email;
     if (telefone !== undefined) updates.telefone = telefone;
     if (foto !== undefined) updates.foto = foto;
     if (bio !== undefined) updates.bio = bio;
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ erro: "Nenhum campo para atualizar" });
-    }
-
+    if (Object.keys(updates).length === 0) return res.status(400).json({ erro: "Nenhum campo" });
     await supabase.from("usuarios").upsert({ id: uid }, { onConflict: "id" });
-
-    const { error } = await supabase
-      .from("usuarios")
-      .update(updates)
-      .eq("id", uid);
-
+    const { error } = await supabase.from("usuarios").update(updates).eq("id", uid);
     if (error) throw error;
-
     res.json({ ok: true });
   } catch (err) {
-    console.error("❌ Erro ao atualizar perfil:", err.message);
-    res.status(500).json({ erro: "Erro ao atualizar perfil" });
+    res.status(500).json({ erro: err.message });
   }
 });
 
 // ===== NOVAS ROTAS DE FUNDOS =====
-// Função auxiliar para obter preço atual (mock, depois substitua por API real)
+// Função auxiliar para obter preço atual (com fallback e múltiplas APIs)
 async function obterPrecoAtual(ticker) {
-  const precos = {
-    "TESOURO_SELIC": 100.00,
-    "CDB_XYZ": 150.00,
-    "FII_ABC": 200.00,
-    "FUNDO_ACOES": 500.00,
+  const precosFallback = {
+    "TESOURO_SELIC": 100.00, "TESOURO_IPCA": 100.00,
+    "CDB_110_CDI": 150.00, "CDB_120_CDI": 200.00,
+    "LCI_90_CDI": 180.00, "LCA_92_CDI": 190.00,
+    "CRI_IPCA": 500.00, "DEB_INFRA": 400.00,
+    "HGLG11": 180.00, "KNRI11": 150.00, "MXRF11": 10.00,
+    "XPLG11": 120.00, "VISC11": 110.00, "RECR11": 95.00,
+    "FUNDO_ACOES_BLUE": 500.00, "FUNDO_SMALL_CAPS": 350.00,
+    "FUNDO_DIVIDENDOS": 400.00, "FUNDO_TECH": 600.00,
+    "FUNDO_ESG": 450.00, "FUNDO_MULTI_01": 300.00,
+    "FUNDO_MULTI_02": 250.00, "FUNDO_MULTI_03": 400.00
   };
-  return precos[ticker] || 100;
+
+  try {
+    const { data: brapiData } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+      params: { token: process.env.BRAPI_API_KEY }
+    });
+    if (brapiData?.results?.[0]?.regularMarketPrice) return brapiData.results[0].regularMarketPrice;
+  } catch (e) {}
+
+  try {
+    const criptoMap = { "BITCOIN": "bitcoin", "ETHEREUM": "ethereum", "SOLANA": "solana" };
+    const coinId = criptoMap[ticker];
+    if (coinId) {
+      const { data } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
+        params: { ids: coinId, vs_currencies: "brl" }
+      });
+      if (data[coinId]?.brl) return data[coinId].brl;
+    }
+  } catch (e) {}
+
+  try {
+    if (process.env.ALPHA_VANTAGE_API_KEY) {
+      const { data: avData } = await axios.get("https://www.alphavantage.co/query", {
+        params: { function: "GLOBAL_QUOTE", symbol: ticker, apikey: process.env.ALPHA_VANTAGE_API_KEY }
+      });
+      const quote = avData?.["Global Quote"];
+      if (quote?.["05. price"]) return parseFloat(quote["05. price"]) * 5.10; // USD->BRL fixo
+    }
+  } catch (e) {}
+
+  return precosFallback[ticker] || 100;
 }
 
-// Listar fundos disponíveis
 app.get("/fundos", async (req, res) => {
-  try {
-    const { data, error } = await supabase.from("fundos").select("*").eq("ativo", true);
-    if (error) throw error;
-    res.json(data);
-  } catch (err) {
-    console.error("❌ Erro ao listar fundos:", err.message);
-    res.status(500).json({ erro: "Erro ao carregar fundos" });
-  }
+  const { data } = await supabase.from("fundos").select("*").eq("ativo", true);
+  res.json(data || []);
 });
 
-// Investir em um fundo
 app.post("/investir-fundo", authMiddleware, async (req, res) => {
   try {
     const { fundo_id, valor } = req.body;
     const uid = req.user.uid;
+    if (!fundo_id || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
 
-    if (!fundo_id || !valor || valor <= 0) {
-      return res.status(400).json({ erro: "Dados inválidos" });
-    }
+    const { data: fundo } = await supabase.from("fundos").select("*").eq("id", fundo_id).single();
+    if (!fundo) return res.status(404).json({ erro: "Fundo não encontrado" });
 
-    // Buscar fundo
-    const { data: fundo, error: erroFundo } = await supabase
-      .from("fundos")
-      .select("*")
-      .eq("id", fundo_id)
-      .single();
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
 
-    if (erroFundo || !fundo) {
-      return res.status(404).json({ erro: "Fundo não encontrado" });
-    }
-
-    // Verificar saldo
-    const { data: user, error: erroUser } = await supabase
-      .from("usuarios")
-      .select("saldo")
-      .eq("id", uid)
-      .single();
-
-    if (erroUser || !user || user.saldo < valor) {
-      return res.status(400).json({ erro: "Saldo insuficiente" });
-    }
-
-    // Calcular cotas (preço atual)
     const valor_cota = await obterPrecoAtual(fundo.ticker);
     const cotas = valor / valor_cota;
-
-    // Debita saldo
     const novoSaldo = user.saldo - valor;
+
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-
-    // Cria investimento
-    const { error: erroInvest } = await supabase.from("investimentos").insert({
-      uid,
-      fundo_id,
-      valor_aplicado: valor,
-      cotas,
-      valor_cota_entrada: valor_cota
+    await supabase.from("investimentos").insert({
+      uid, fundo_id, valor_aplicado: valor, cotas, valor_cota_entrada: valor_cota
     });
-
-    if (erroInvest) throw erroInvest;
-
-    // Registra transação
     await supabase.from("transactions").insert({
-      uid,
-      tipo: "investimento",
-      valor,
-      status: "aprovado",
-      categoria: fundo.ticker
+      uid, tipo: "investimento", valor, status: "aprovado", categoria: fundo.ticker
     });
-
     res.json({ ok: true, novo_saldo: novoSaldo });
   } catch (err) {
-    console.error("❌ Erro ao investir em fundo:", err.message);
     res.status(500).json({ erro: "Erro interno ao investir" });
   }
 });
 
-// Resgatar investimento
 app.post("/resgatar-fundo", authMiddleware, async (req, res) => {
   try {
     const { investimento_id } = req.body;
     const uid = req.user.uid;
+    const { data: inv } = await supabase.from("investimentos").select("*, fundos(*)").eq("id", investimento_id).eq("uid", uid).single();
+    if (!inv || inv.status !== "ativo") return res.status(400).json({ erro: "Investimento não encontrado" });
 
-    // Buscar investimento
-    const { data: inv, error } = await supabase
-      .from("investimentos")
-      .select("*, fundos(*)")
-      .eq("id", investimento_id)
-      .eq("uid", uid)
-      .single();
-
-    if (error || !inv || inv.status !== "ativo") {
-      return res.status(400).json({ erro: "Investimento não encontrado ou já resgatado" });
-    }
-
-    // Calcular valor atual
     const valor_cota_atual = await obterPrecoAtual(inv.fundos.ticker);
     const valor_resgate = inv.cotas * valor_cota_atual;
 
-    // Credita saldo
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-    const novoSaldo = user.saldo + valor_resgate;
-    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("usuarios").update({ saldo: user.saldo + valor_resgate }).eq("id", uid);
+    await supabase.from("investimentos").update({ status: "resgatado", data_resgate: new Date() }).eq("id", investimento_id);
+    await supabase.from("transactions").insert({ uid, tipo: "resgate", valor: valor_resgate, status: "aprovado" });
 
-    // Atualiza investimento
-    await supabase.from("investimentos").update({
-      status: "resgatado",
-      data_resgate: new Date()
-    }).eq("id", investimento_id);
-
-    // Transação
-    await supabase.from("transactions").insert({
-      uid,
-      tipo: "resgate",
-      valor: valor_resgate,
-      status: "aprovado"
-    });
-
-    res.json({ ok: true, valor_resgate, novo_saldo: novoSaldo });
+    res.json({ ok: true, valor_resgate });
   } catch (err) {
-    console.error("❌ Erro ao resgatar:", err.message);
     res.status(500).json({ erro: "Erro interno ao resgatar" });
   }
 });
 
-// Carteira do usuário (investimentos ativos)
 app.get("/carteira/:uid", authMiddleware, async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from("investimentos")
-      .select("*, fundos(*)")
-      .eq("uid", req.user.uid)
-      .eq("status", "ativo");
-
-    if (error) throw error;
-
-    // Calcula valor atual de cada investimento
+    const { data } = await supabase.from("investimentos").select("*, fundos(*)").eq("uid", req.user.uid).eq("status", "ativo");
     const carteira = await Promise.all(data.map(async (inv) => {
       const precoAtual = await obterPrecoAtual(inv.fundos.ticker);
       const valorAtual = inv.cotas * precoAtual;
       const rentabilidade = ((valorAtual - inv.valor_aplicado) / inv.valor_aplicado) * 100;
-      return {
-        ...inv,
-        valor_atual: valorAtual,
-        rentabilidade: rentabilidade
-      };
+      return { ...inv, valor_atual: valorAtual, rentabilidade };
     }));
-
     res.json(carteira);
   } catch (err) {
-    console.error("❌ Erro ao carregar carteira:", err.message);
     res.status(500).json({ erro: "Erro ao carregar carteira" });
   }
 });
