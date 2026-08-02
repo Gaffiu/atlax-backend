@@ -260,7 +260,6 @@ app.post("/ia/perguntar", authMiddleware, async (req, res) => {
     if (!mensagem) return res.status(400).json({ resposta: "Digite uma pergunta." });
 
     const response = await axios.post(
-      // 🔁 MODELO CORRIGIDO: gemini-2.5-flash
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         contents: [{ parts: [{ text: `Você é um assistente financeiro especializado. Responda de forma CURTA, DIRETA e RESUMIDA, no máximo 3 frases. Seja gentil e motivador. Pergunta do usuário: ${mensagem}` }] }]
@@ -400,7 +399,6 @@ app.get("/cartoes/:uid", authMiddleware, async (req, res) => {
 });
 
 // ===== BELVO - OPEN FINANCE =====
-// 1. Gerar token de conexão para o Widget (CORRIGIDO)
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   console.log("🔑 BELVO_SECRET_ID presente:", process.env.BELVO_SECRET_ID ? "SIM" : "NÃO");
   
@@ -433,7 +431,6 @@ app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
   }
 });
 
-// 2. Webhook da Belvo (salva conta automaticamente)
 app.post("/webhook/belvo", async (req, res) => {
   const { webhook_type, data } = req.body;
   
@@ -441,14 +438,12 @@ app.post("/webhook/belvo", async (req, res) => {
     console.log("🔄 Webhook recebido para link:", data.link_id);
     
     try {
-      // Busca o nome da instituição
       const linkResponse = await axios.get(
         `${BELVO_API_URL}/api/links/${data.link_id}/`,
         BELVO_AUTH
       );
       const institution = linkResponse.data.institution;
       
-      // Salva no Supabase
       const { error } = await supabase.from("contas").insert({
         uid: data.user_id,
         nome: institution || "Banco Conectado",
@@ -469,7 +464,6 @@ app.post("/webhook/belvo", async (req, res) => {
   res.status(200).send("OK");
 });
 
-// 3. Buscar contas de um link Belvo
 app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
@@ -485,7 +479,6 @@ app.get("/belvo/contas/:linkId", authMiddleware, async (req, res) => {
   }
 });
 
-// 4. Buscar transações de um link Belvo
 app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
@@ -501,7 +494,6 @@ app.get("/belvo/transacoes/:linkId", authMiddleware, async (req, res) => {
   }
 });
 
-// ===== NOVAS ROTAS PARA CARTÕES DE CRÉDITO (BELVO) =====
 app.get("/belvo/cartoes-contas/:linkId", authMiddleware, async (req, res) => {
   if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
   try {
@@ -600,8 +592,6 @@ app.get("/cartas/:uid", authMiddleware, async (req, res) => {
 });
 
 // ===== PERFIL DO USUÁRIO =====
-
-// Buscar perfil
 app.get("/perfil/:uid", authMiddleware, async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -611,13 +601,7 @@ app.get("/perfil/:uid", authMiddleware, async (req, res) => {
       .single();
 
     if (error || !data) {
-      return res.json({
-        nome: "",
-        email: "",
-        telefone: "",
-        foto: "",
-        bio: ""
-      });
+      return res.json({ nome: "", email: "", telefone: "", foto: "", bio: "" });
     }
 
     res.json(data);
@@ -627,7 +611,6 @@ app.get("/perfil/:uid", authMiddleware, async (req, res) => {
   }
 });
 
-// Atualizar perfil
 app.put("/perfil/:uid", authMiddleware, async (req, res) => {
   try {
     const uid = req.user.uid;
@@ -644,7 +627,6 @@ app.put("/perfil/:uid", authMiddleware, async (req, res) => {
       return res.status(400).json({ erro: "Nenhum campo para atualizar" });
     }
 
-    // Garante que o usuário existe
     await supabase.from("usuarios").upsert({ id: uid }, { onConflict: "id" });
 
     const { error } = await supabase
@@ -658,6 +640,175 @@ app.put("/perfil/:uid", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("❌ Erro ao atualizar perfil:", err.message);
     res.status(500).json({ erro: "Erro ao atualizar perfil" });
+  }
+});
+
+// ===== NOVAS ROTAS DE FUNDOS =====
+// Função auxiliar para obter preço atual (mock, depois substitua por API real)
+async function obterPrecoAtual(ticker) {
+  const precos = {
+    "TESOURO_SELIC": 100.00,
+    "CDB_XYZ": 150.00,
+    "FII_ABC": 200.00,
+    "FUNDO_ACOES": 500.00,
+  };
+  return precos[ticker] || 100;
+}
+
+// Listar fundos disponíveis
+app.get("/fundos", async (req, res) => {
+  try {
+    const { data, error } = await supabase.from("fundos").select("*").eq("ativo", true);
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error("❌ Erro ao listar fundos:", err.message);
+    res.status(500).json({ erro: "Erro ao carregar fundos" });
+  }
+});
+
+// Investir em um fundo
+app.post("/investir-fundo", authMiddleware, async (req, res) => {
+  try {
+    const { fundo_id, valor } = req.body;
+    const uid = req.user.uid;
+
+    if (!fundo_id || !valor || valor <= 0) {
+      return res.status(400).json({ erro: "Dados inválidos" });
+    }
+
+    // Buscar fundo
+    const { data: fundo, error: erroFundo } = await supabase
+      .from("fundos")
+      .select("*")
+      .eq("id", fundo_id)
+      .single();
+
+    if (erroFundo || !fundo) {
+      return res.status(404).json({ erro: "Fundo não encontrado" });
+    }
+
+    // Verificar saldo
+    const { data: user, error: erroUser } = await supabase
+      .from("usuarios")
+      .select("saldo")
+      .eq("id", uid)
+      .single();
+
+    if (erroUser || !user || user.saldo < valor) {
+      return res.status(400).json({ erro: "Saldo insuficiente" });
+    }
+
+    // Calcular cotas (preço atual)
+    const valor_cota = await obterPrecoAtual(fundo.ticker);
+    const cotas = valor / valor_cota;
+
+    // Debita saldo
+    const novoSaldo = user.saldo - valor;
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+
+    // Cria investimento
+    const { error: erroInvest } = await supabase.from("investimentos").insert({
+      uid,
+      fundo_id,
+      valor_aplicado: valor,
+      cotas,
+      valor_cota_entrada: valor_cota
+    });
+
+    if (erroInvest) throw erroInvest;
+
+    // Registra transação
+    await supabase.from("transactions").insert({
+      uid,
+      tipo: "investimento",
+      valor,
+      status: "aprovado",
+      categoria: fundo.ticker
+    });
+
+    res.json({ ok: true, novo_saldo: novoSaldo });
+  } catch (err) {
+    console.error("❌ Erro ao investir em fundo:", err.message);
+    res.status(500).json({ erro: "Erro interno ao investir" });
+  }
+});
+
+// Resgatar investimento
+app.post("/resgatar-fundo", authMiddleware, async (req, res) => {
+  try {
+    const { investimento_id } = req.body;
+    const uid = req.user.uid;
+
+    // Buscar investimento
+    const { data: inv, error } = await supabase
+      .from("investimentos")
+      .select("*, fundos(*)")
+      .eq("id", investimento_id)
+      .eq("uid", uid)
+      .single();
+
+    if (error || !inv || inv.status !== "ativo") {
+      return res.status(400).json({ erro: "Investimento não encontrado ou já resgatado" });
+    }
+
+    // Calcular valor atual
+    const valor_cota_atual = await obterPrecoAtual(inv.fundos.ticker);
+    const valor_resgate = inv.cotas * valor_cota_atual;
+
+    // Credita saldo
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    const novoSaldo = user.saldo + valor_resgate;
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+
+    // Atualiza investimento
+    await supabase.from("investimentos").update({
+      status: "resgatado",
+      data_resgate: new Date()
+    }).eq("id", investimento_id);
+
+    // Transação
+    await supabase.from("transactions").insert({
+      uid,
+      tipo: "resgate",
+      valor: valor_resgate,
+      status: "aprovado"
+    });
+
+    res.json({ ok: true, valor_resgate, novo_saldo: novoSaldo });
+  } catch (err) {
+    console.error("❌ Erro ao resgatar:", err.message);
+    res.status(500).json({ erro: "Erro interno ao resgatar" });
+  }
+});
+
+// Carteira do usuário (investimentos ativos)
+app.get("/carteira/:uid", authMiddleware, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("investimentos")
+      .select("*, fundos(*)")
+      .eq("uid", req.user.uid)
+      .eq("status", "ativo");
+
+    if (error) throw error;
+
+    // Calcula valor atual de cada investimento
+    const carteira = await Promise.all(data.map(async (inv) => {
+      const precoAtual = await obterPrecoAtual(inv.fundos.ticker);
+      const valorAtual = inv.cotas * precoAtual;
+      const rentabilidade = ((valorAtual - inv.valor_aplicado) / inv.valor_aplicado) * 100;
+      return {
+        ...inv,
+        valor_atual: valorAtual,
+        rentabilidade: rentabilidade
+      };
+    }));
+
+    res.json(carteira);
+  } catch (err) {
+    console.error("❌ Erro ao carregar carteira:", err.message);
+    res.status(500).json({ erro: "Erro ao carregar carteira" });
   }
 });
 
