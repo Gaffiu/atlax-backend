@@ -12,8 +12,17 @@ const authMiddleware = require("./middleware/auth");
 
 const app = express();
 
-// Segurança de cabeçalhos
-app.use(helmet());
+// app.use(helmet());  ← apague essa linha
+
+// Versão manual dos headers de segurança
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
 
 // CORS restrito – permitir apenas o frontend da Atlax
 const FRONTEND_URLS = process.env.FRONTEND_URLS
