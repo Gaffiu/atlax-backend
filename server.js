@@ -18,18 +18,17 @@ console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO c
 const {
   MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY,
   BELVO_SECRET_ID, BELVO_SECRET_PASSWORD,
-  NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET
+  NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET,
+  GEMINI_API_KEY
 } = process.env;
 
-const TAXA_DEPOSITO = 0.10;   // 10%
-const TAXA_SAQUE = 0.10;      // 10%
-const SAQUE_MINIMO = 100;     // mínimo R$ 100
+const TAXA_DEPOSITO = 0.10;
+const TAXA_SAQUE = 0.10;
+const SAQUE_MINIMO = 100;
 
-// Chaves NowPayments (fallback direto)
 const NP_API_KEY = NOWPAYMENTS_API_KEY || "X8W9RCR-8FBMAZE-JY5M30C-7BTTZ5T";
 const NP_IPN_SECRET = NOWPAYMENTS_IPN_SECRET || "RqofPHswoZPO4xypGzxBkoKyNtf0px8w";
 
-// --- Mercado Pago ---
 let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
@@ -37,7 +36,6 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
-// --- Cliente Belvo ---
 const BELVO_API_URL = "https://sandbox.belvo.com";
 const BELVO_AUTH = BELVO_SECRET_ID && BELVO_SECRET_PASSWORD ? {
   auth: { username: BELVO_SECRET_ID, password: BELVO_SECRET_PASSWORD }
@@ -111,7 +109,7 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
-// ===== ROTAS =====
+// ===== ROTAS BÁSICAS =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
 app.get("/cotacoes", async (_, res) => {
@@ -131,6 +129,26 @@ app.get("/extrato/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
+// ===== PERFIL =====
+app.get("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
+  res.json(data || {});
+});
+
+app.put("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { nome, email, telefone, bio, foto } = req.body;
+  const updates = {};
+  if (nome !== undefined) updates.nome = nome;
+  if (email !== undefined) updates.email = email;
+  if (telefone !== undefined) updates.telefone = telefone;
+  if (bio !== undefined) updates.bio = bio;
+  if (foto !== undefined) updates.foto = foto;
+  const { error } = await supabase.from("usuarios").update(updates).eq("id", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao atualizar perfil" });
+  res.json({ ok: true });
+});
+
+// ===== DEPÓSITO PIX =====
 app.post("/deposito", authMiddleware, async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
@@ -176,53 +194,28 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-app.post("/investir", authMiddleware, async (req, res) => {
-  try {
-    const { tipo, valor } = req.body;
-    const uid = req.user.uid;
-    if (!tipo || isNaN(valor) || Number(valor) <= 0) return res.status(400).json({ erro: "Valor inválido" });
-    const { data, error } = await supabase.rpc("realizar_investimento", {
-      p_uid: uid, p_tipo: tipo.toLowerCase().replace(/\s/g,""), p_valor: Number(valor)
-    });
-    if (error) return res.status(500).json({ erro: "Erro no servidor" });
-    if (data?.erro) return res.status(400).json({ erro: data.erro });
-    res.json({ ok: true, novo_saldo: data.novo_saldo });
-  } catch (err) {
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
-
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor, pix } = req.body;
     const uid = req.user.uid;
-
     const valorSaque = Number(valor);
     if (!valorSaque || valorSaque < SAQUE_MINIMO) {
       return res.status(400).json({ erro: `Valor mínimo para saque é R$ ${SAQUE_MINIMO}` });
     }
-
     const taxa = valorSaque * TAXA_SAQUE;
-    const valorTotal = valorSaque + taxa;   // saldo necessário
-
+    const valorTotal = valorSaque + taxa;
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
     if (!user || user.saldo == null || user.saldo < valorTotal) {
       return res.status(400).json({ erro: `Saldo insuficiente. Necessário R$ ${valorTotal.toFixed(2)} (já com taxa de 10%)` });
     }
-
     const novoSaldo = user.saldo - valorTotal;
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-
     await supabase.from("transactions").insert([
       { uid, tipo: "saque", valor: valorSaque, status: "pendente", categoria: pix || "pix" },
       { uid: "admin", tipo: "taxa_saque", valor: taxa, status: "aprovado", categoria: "taxa" }
     ]);
-
     res.json({ ok: true, taxa, valorLiquido: valorSaque, valorTotal });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ erro: "Erro interno" });
-  }
+  } catch (e) { res.status(500).json({ erro: "Erro interno" }); }
 });
 
 // ===== DEPÓSITO CRIPTO =====
@@ -285,6 +278,323 @@ app.post("/webhook/nowpayments", async (req, res) => {
   } catch (err) {
     res.status(500).json({ erro: "Erro interno" });
   }
+});
+
+// ===== FUNDOS E INVESTIMENTOS =====
+app.get("/fundos", async (_, res) => {
+  const { data } = await supabase.from("fundos").select("*").eq("ativo", true);
+  res.json(data || []);
+});
+
+app.get("/ativos", async (req, res) => {
+  const { tipo } = req.query;
+  let query = supabase.from("fundos").select("*").eq("ativo", true);
+  if (tipo) query = query.eq("tipo", tipo);
+  const { data } = await query;
+  res.json(data || []);
+});
+
+app.get("/carteira/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("investimentos").select("*, fundos(*)").eq("uid", req.user.uid).eq("status", "ativo");
+  res.json(data || []);
+});
+
+app.post("/investir-fundo", authMiddleware, async (req, res) => {
+  const { fundo_id, valor } = req.body;
+  const uid = req.user.uid;
+  if (!fundo_id || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
+
+  const { data: fundo } = await supabase.from("fundos").select("*").eq("id", fundo_id).single();
+  if (!fundo) return res.status(400).json({ erro: "Fundo não encontrado" });
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+  const cotas = valor / (fundo.rentabilidade_12m ? 100 : 100); // simplificado: cada cota = R$ 100
+  const novoSaldo = user.saldo - valor;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("investimentos").insert({
+    uid, fundo_id, valor_aplicado: valor, valor_atual: valor, cotas,
+    rentabilidade: 0, status: "ativo"
+  });
+  await supabase.from("transactions").insert({ uid, tipo: "investimento", valor, status: "aprovado", categoria: fundo.nome });
+
+  res.json({ ok: true, novo_saldo: novoSaldo });
+});
+
+app.post("/resgatar-fundo", authMiddleware, async (req, res) => {
+  const { investimento_id } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("investimentos").select("*, fundos(*)").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  const valorResgate = inv.valor_atual || inv.valor_aplicado;
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  const novoSaldo = (user?.saldo ?? 0) + valorResgate;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("investimentos").update({ status: "resgatado" }).eq("id", investimento_id);
+  await supabase.from("transactions").insert({ uid, tipo: "resgate", valor: valorResgate, status: "aprovado", categoria: inv.fundos?.nome || "Fundo" });
+
+  res.json({ ok: true, valor_resgate: valorResgate });
+});
+
+app.post("/resgatar-fundo-parcial", authMiddleware, async (req, res) => {
+  const { investimento_id, cotas_a_resgatar } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("investimentos").select("*").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  if (inv.cotas < cotas_a_resgatar) return res.status(400).json({ erro: "Cotas insuficientes" });
+
+  const valorPorCota = inv.valor_atual / inv.cotas;
+  const valorResgate = valorPorCota * cotas_a_resgatar;
+  const novasCotas = inv.cotas - cotas_a_resgatar;
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  const novoSaldo = (user?.saldo ?? 0) + valorResgate;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  if (novasCotas <= 0) {
+    await supabase.from("investimentos").update({ status: "resgatado", cotas: 0 }).eq("id", investimento_id);
+  } else {
+    await supabase.from("investimentos").update({
+      cotas: novasCotas,
+      valor_aplicado: inv.valor_aplicado - (inv.valor_aplicado / inv.cotas) * cotas_a_resgatar,
+      valor_atual: novasCotas * valorPorCota
+    }).eq("id", investimento_id);
+  }
+  await supabase.from("transactions").insert({ uid, tipo: "resgate", valor: valorResgate, status: "aprovado" });
+
+  res.json({ ok: true, valor_resgate: valorResgate });
+});
+
+app.get("/certificado-investimento/:id", authMiddleware, async (req, res) => {
+  const { data: inv } = await supabase.from("investimentos").select("*, fundos(nome, ticker)").eq("id", req.params.id).eq("uid", req.user.uid).single();
+  if (!inv) return res.status(404).json({ erro: "Investimento não encontrado" });
+  res.json({
+    nome_fundo: inv.fundos?.nome,
+    ticker: inv.fundos?.ticker,
+    valor_aplicado: inv.valor_aplicado,
+    cotas: inv.cotas,
+    data_aplicacao: inv.data_aplicacao
+  });
+});
+
+// ===== APORTES AUTOMÁTICOS =====
+app.get("/aportes-automaticos/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("aportes_automaticos").select("*, fundos(nome, ticker)").eq("uid", req.user.uid).eq("ativo", true);
+  res.json(data || []);
+});
+
+app.post("/aporte-automatico", authMiddleware, async (req, res) => {
+  const { fundo_id, valor, periodicidade, dia_do_mes } = req.body;
+  const { error } = await supabase.from("aportes_automaticos").insert({
+    uid: req.user.uid, fundo_id, valor, periodicidade, dia_do_mes
+  });
+  if (error) return res.status(500).json({ erro: "Erro ao criar aporte" });
+  res.json({ ok: true });
+});
+
+app.delete("/aporte-automatico/:id", authMiddleware, async (req, res) => {
+  const { error } = await supabase.from("aportes_automaticos").update({ ativo: false }).eq("id", req.params.id).eq("uid", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao cancelar" });
+  res.json({ ok: true });
+});
+
+// ===== ORDENS AUTOMÁTICAS =====
+app.get("/ordens-automaticas/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("ordens_automaticas").select("*, fundos(nome, ticker)").eq("uid", req.user.uid).eq("ativo", true);
+  res.json(data || []);
+});
+
+app.post("/ordem-automatica", authMiddleware, async (req, res) => {
+  const { fundo_id, tipo, rentabilidade_acionadora } = req.body;
+  const { error } = await supabase.from("ordens_automaticas").insert({
+    uid: req.user.uid, fundo_id, tipo, rentabilidade_acionadora
+  });
+  if (error) return res.status(500).json({ erro: "Erro ao criar ordem" });
+  res.json({ ok: true });
+});
+
+app.delete("/ordem-automatica/:id", authMiddleware, async (req, res) => {
+  const { error } = await supabase.from("ordens_automaticas").update({ ativo: false }).eq("id", req.params.id).eq("uid", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao cancelar" });
+  res.json({ ok: true });
+});
+
+// ===== COMPARADOR =====
+app.get("/comparar-fundos", async (req, res) => {
+  const tickers = req.query.tickers?.split(",") || [];
+  const { data } = await supabase.from("fundos").select("*").in("ticker", tickers).eq("ativo", true);
+  res.json(data || []);
+});
+
+// ===== CONTAS E BELVO =====
+app.get("/contas/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("contas").select("*").eq("uid", req.user.uid);
+  res.json(data || []);
+});
+
+app.put("/conta/:id", authMiddleware, async (req, res) => {
+  const { saldo } = req.body;
+  const { error } = await supabase.from("contas").update({ saldo }).eq("id", req.params.id).eq("uid", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao atualizar" });
+  res.json({ ok: true });
+});
+
+app.post("/cartao", authMiddleware, async (req, res) => {
+  const { descricao, valor, categoria } = req.body;
+  const { error } = await supabase.from("transactions").insert({
+    uid: req.user.uid, tipo: "cartao", valor, status: "pendente", categoria: descricao
+  });
+  if (error) return res.status(500).json({ erro: "Erro ao adicionar" });
+  res.json({ ok: true });
+});
+
+app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  try {
+    const response = await axios.post(`${BELVO_API_URL}/api/token`, {
+      id: "atlax-connect",
+      password: BELVO_SECRET_PASSWORD,
+      scopes: "read_institutions,write_links,read_links,read_accounts,read_transactions,read_credit_cards"
+    }, { auth: BELVO_AUTH });
+    res.json({ accessToken: response.data.access });
+  } catch (e) {
+    console.error("❌ Erro token Belvo:", e.response?.data || e.message);
+    res.status(500).json({ erro: "Falha ao gerar token Belvo" });
+  }
+});
+
+app.get("/belvo/contas/:itemId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.json([]);
+  try {
+    const response = await axios.get(`${BELVO_API_URL}/api/accounts/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
+    res.json(response.data.results || []);
+  } catch (e) {
+    console.error("❌ Erro Belvo contas:", e.response?.data || e.message);
+    res.json([]);
+  }
+});
+
+app.get("/belvo/transacoes/:itemId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.json([]);
+  try {
+    const response = await axios.get(`${BELVO_API_URL}/api/transactions/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
+    res.json(response.data.results || []);
+  } catch (e) {
+    console.error("❌ Erro Belvo transações:", e.response?.data || e.message);
+    res.json([]);
+  }
+});
+
+app.get("/belvo/cartoes-contas/:itemId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.json({ encontradas: false, cartoes: [] });
+  try {
+    const response = await axios.get(`${BELVO_API_URL}/api/credit-cards/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
+    res.json({ encontradas: true, cartoes: response.data.results || [] });
+  } catch (e) {
+    console.error("❌ Erro Belvo cartões:", e.response?.data || e.message);
+    res.json({ encontradas: false, cartoes: [] });
+  }
+});
+
+app.get("/belvo/faturas/:linkId/:accountId", authMiddleware, async (req, res) => {
+  if (!BELVO_AUTH) return res.json([]);
+  try {
+    const response = await axios.get(`${BELVO_API_URL}/api/transactions/?link=${req.params.linkId}&account=${req.params.accountId}`, { auth: BELVO_AUTH });
+    res.json(response.data.results || []);
+  } catch (e) {
+    console.error("❌ Erro Belvo faturas:", e.response?.data || e.message);
+    res.json([]);
+  }
+});
+
+// ===== IA (GEMINI) =====
+app.post("/ia/perguntar", authMiddleware, async (req, res) => {
+  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA não configurada" });
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: req.body.mensagem }] }] }
+    );
+    const texto = response.data.candidates[0].content.parts[0].text;
+    res.json({ resposta: texto });
+  } catch (e) {
+    console.error("Erro Gemini:", e.response?.data || e.message);
+    res.json({ resposta: "Não foi possível responder agora." });
+  }
+});
+
+app.post("/ia/analisar", authMiddleware, async (req, res) => {
+  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA não configurada" });
+  try {
+    const { data: user } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
+    const { data: transacoes } = await supabase.from("transactions").select("*").eq("uid", req.user.uid).limit(20);
+    const prompt = `Analise os dados financeiros do usuário:\nSaldo: R$ ${user.saldo}\nTransações recentes: ${JSON.stringify(transacoes)}\n\nGere uma análise financeira resumida, sugestões personalizadas e riscos identificados. Seja gentil e motivador.`;
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: prompt }] }] }
+    );
+    const texto = response.data.candidates[0].content.parts[0].text;
+    res.json({ resposta: texto });
+  } catch (e) {
+    console.error("Erro Gemini análise:", e.response?.data || e.message);
+    res.json({ resposta: "Não foi possível analisar agora." });
+  }
+});
+
+app.get("/ia", async (req, res) => {
+  res.json({ resposta: "O Oráculo está nebuloso. Faça uma pergunta direta." });
+});
+
+// ===== COFRE DO TEMPO =====
+app.get("/cartas/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("cartas").select("*").eq("uid", req.user.uid).order("criada_em", { ascending: false });
+  res.json(data || []);
+});
+
+app.post("/cartas", authMiddleware, async (req, res) => {
+  const { titulo, texto, data_abertura } = req.body;
+  const { error } = await supabase.from("cartas").insert({ uid: req.user.uid, titulo, texto, data_abertura });
+  if (error) return res.status(500).json({ erro: "Erro ao salvar" });
+  res.json({ ok: true });
+});
+
+// ===== ATLAX COINS =====
+app.get("/coins/:uid", authMiddleware, async (req, res) => {
+  const { data: user } = await supabase.from("usuarios").select("atlax_coins").eq("id", req.user.uid).single();
+  res.json({ coins: user?.atlax_coins ?? 0 });
+});
+
+app.post("/coins/adicionar", authMiddleware, async (req, res) => {
+  const { quantidade, motivo } = req.body;
+  const uid = req.user.uid;
+  await supabase.from("usuarios").upsert({ id: uid, atlax_coins: 0 }, { onConflict: "id" });
+  const { data: user } = await supabase.from("usuarios").select("atlax_coins").eq("id", uid).single();
+  const novoSaldo = (user?.atlax_coins ?? 0) + quantidade;
+  await supabase.from("usuarios").update({ atlax_coins: novoSaldo }).eq("id", uid);
+  await supabase.from("coins").insert({ uid, quantidade, motivo });
+  res.json({ ok: true, novo_saldo: novoSaldo });
+});
+
+app.post("/coins/resgatar", authMiddleware, async (req, res) => {
+  const { quantidade } = req.body;
+  const uid = req.user.uid;
+  const taxa_conversao = 0.05; // R$ 0,05 por coin
+  const { data: user } = await supabase.from("usuarios").select("atlax_coins, saldo").eq("id", uid).single();
+  if (!user || (user.atlax_coins || 0) < quantidade) return res.status(400).json({ erro: "Coins insuficientes" });
+  const valor_creditado = quantidade * taxa_conversao;
+  const novoCoins = (user.atlax_coins || 0) - quantidade;
+  const novoSaldo = (user.saldo || 0) + valor_creditado;
+  await supabase.from("usuarios").update({ atlax_coins: novoCoins, saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("coins").insert({ uid, quantidade: -quantidade, motivo: "resgate" });
+  await supabase.from("transactions").insert({ uid, tipo: "resgate_coins", valor: valor_creditado, status: "aprovado", categoria: "coins" });
+  res.json({ ok: true, valor_creditado });
 });
 
 const PORT = process.env.PORT || 5000;
