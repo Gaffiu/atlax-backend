@@ -21,7 +21,9 @@ const {
   NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET
 } = process.env;
 
-const TAXA_DEPOSITO = 0.05;
+const TAXA_DEPOSITO = 0.10;   // 10%
+const TAXA_SAQUE = 0.10;      // 10%
+const SAQUE_MINIMO = 100;     // mínimo R$ 100
 
 // Chaves NowPayments (fallback direto)
 const NP_API_KEY = NOWPAYMENTS_API_KEY || "X8W9RCR-8FBMAZE-JY5M30C-7BTTZ5T";
@@ -134,6 +136,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
     if (!payment) return res.status(500).json({ erro: "MP não configurado" });
     const { valor } = req.body;
     if (!valor || valor <= 0) return res.status(400).json({ erro: "Valor inválido" });
+
     const pagamento = await payment.create({
       body: { transaction_amount: Number(valor), payment_method_id: "pix", payer: { email: "cliente@atlax.com" }, metadata: { uid: req.user.uid } }
     });
@@ -193,13 +196,31 @@ app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor, pix } = req.body;
     const uid = req.user.uid;
+
+    const valorSaque = Number(valor);
+    if (!valorSaque || valorSaque < SAQUE_MINIMO) {
+      return res.status(400).json({ erro: `Valor mínimo para saque é R$ ${SAQUE_MINIMO}` });
+    }
+
+    const taxa = valorSaque * TAXA_SAQUE;
+    const valorTotal = valorSaque + taxa;   // saldo necessário
+
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-    if (!user || valor > (user.saldo ?? 0)) return res.status(400).json({ erro: "Saldo insuficiente" });
-    const novoSaldo = user.saldo - Number(valor);
+    if (!user || user.saldo == null || user.saldo < valorTotal) {
+      return res.status(400).json({ erro: `Saldo insuficiente. Necessário R$ ${valorTotal.toFixed(2)} (já com taxa de 10%)` });
+    }
+
+    const novoSaldo = user.saldo - valorTotal;
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-    await supabase.from("transactions").insert({ uid, tipo: "saque", valor: Number(valor), status: "pendente", categoria: pix });
-    res.json({ ok: true });
+
+    await supabase.from("transactions").insert([
+      { uid, tipo: "saque", valor: valorSaque, status: "pendente", categoria: pix || "pix" },
+      { uid: "admin", tipo: "taxa_saque", valor: taxa, status: "aprovado", categoria: "taxa" }
+    ]);
+
+    res.json({ ok: true, taxa, valorLiquido: valorSaque, valorTotal });
   } catch (e) {
+    console.error(e);
     res.status(500).json({ erro: "Erro interno" });
   }
 });
@@ -265,9 +286,6 @@ app.post("/webhook/nowpayments", async (req, res) => {
     res.status(500).json({ erro: "Erro interno" });
   }
 });
-
-// ===== FUNDOS E DEMAIS ROTAS (mantidas integralmente) =====
-// (Todo o código de /fundos, /investir-fundo, etc. permanece igual)
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
