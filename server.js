@@ -12,18 +12,6 @@ const authMiddleware = require("./middleware/auth");
 
 const app = express();
 
-// app.use(helmet());  ← apague essa linha
-
-// Versão manual dos headers de segurança
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "0");
-  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
-});
-
 // CORS restrito – permitir apenas o frontend da Atlax
 const FRONTEND_URLS = process.env.FRONTEND_URLS
   ? process.env.FRONTEND_URLS.split(",")
@@ -44,6 +32,16 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Headers de segurança (sem dependência extra)
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
 
 console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
 
