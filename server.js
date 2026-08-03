@@ -21,42 +21,30 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS restrito
+// CORS inteligente: permite tudo se FRONTEND_URLS não existir
 const FRONTEND_URLS = process.env.FRONTEND_URLS
   ? process.env.FRONTEND_URLS.split(",")
-  : ["http://localhost:5000", "http://localhost:3000"];
+  : null;
 
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || FRONTEND_URLS.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.warn(`🚫 CORS bloqueado para origem: ${origin}`);
-      callback(new Error("Origem não permitida"));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  origin: FRONTEND_URLS
+    ? (origin, callback) => {
+        if (!origin || FRONTEND_URLS.includes(origin)) callback(null, true);
+        else { console.warn(`🚫 CORS bloqueado: ${origin}`); callback(new Error("Origem não permitida")); }
+      }
+    : true,
+  methods: ["GET","POST","PUT","DELETE"],
+  allowedHeaders: ["Content-Type","Authorization"]
 }));
 
 app.use(express.json());
 
-console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
-
 const {
-  MP_TOKEN,
-  BRAPI_API_KEY,
-  ALPHA_VANTAGE_API_KEY,
-  BELVO_SECRET_ID,
-  BELVO_SECRET_PASSWORD,
-  NOWPAYMENTS_API_KEY,
-  NOWPAYMENTS_IPN_SECRET,
+  MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY,
+  BELVO_SECRET_ID, BELVO_SECRET_PASSWORD,
+  NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET,
   GEMINI_API_KEY
 } = process.env;
-
-if (!NOWPAYMENTS_API_KEY) console.warn("⚠️ NOWPAYMENTS_API_KEY não configurada – depósito cripto ficará offline.");
-if (!MP_TOKEN) console.warn("⚠️ MP_TOKEN não configurada – depósito PIX ficará offline.");
-if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não configurada – IA ficará offline.");
 
 const TAXA_DEPOSITO = 0.10;
 const TAXA_SAQUE = 0.10;
@@ -144,7 +132,7 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
-// ===== ROTAS BÁSICAS =====
+// ===== ROTAS =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
 app.get("/cotacoes", async (_, res) => {
@@ -229,7 +217,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
-// ===== SAQUE (com taxa 10% e mínimo R$100) =====
+// ===== SAQUE =====
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor, pix } = req.body;
@@ -654,29 +642,38 @@ app.post("/coins/resgatar", authMiddleware, async (req, res) => {
 // ===== INDICADORES =====
 app.get("/indicadores", async (_, res) => {
   const ind = [];
-  const { data: cotacoes } = await supabase.from("cotacoes").select("*");
-  const mapa = {};
-  cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
+  try {
+    const { data: cotacoes } = await supabase.from("cotacoes").select("*");
+    const mapa = {};
+    cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
 
-  const ibov = mapa["IBOV"] || { preco: 128500, variacao: 0.82 };
-  ind.push({ nome: "IBOV", valor: ibov.preco.toLocaleString("pt-BR"), var: `${ibov.variacao >= 0 ? '+' : ''}${ibov.variacao.toFixed(2)}%`, positivo: ibov.variacao >= 0 });
-  const ifix = mapa["IFIX"] || { preco: 3150, variacao: 0.35 };
-  ind.push({ nome: "IFIX", valor: ifix.preco.toFixed(0), var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`, positivo: ifix.variacao >= 0 });
+    const ibov = mapa["IBOV"] || { preco: 128500, variacao: 0.82 };
+    ind.push({ nome: "IBOV", valor: ibov.preco.toLocaleString("pt-BR"), var: `${ibov.variacao >= 0 ? '+' : ''}${ibov.variacao.toFixed(2)}%`, positivo: ibov.variacao >= 0 });
+    const ifix = mapa["IFIX"] || { preco: 3150, variacao: 0.35 };
+    ind.push({ nome: "IFIX", valor: ifix.preco.toFixed(0), var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`, positivo: ifix.variacao >= 0 });
+    const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
+    ind.push({ nome: "Dólar", valor: `R$ ${usd.preco.toFixed(2)}`, var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`, positivo: usd.variacao >= 0 });
+  } catch (e) {}
+
+  // sempre adiciona os fixos no final
   ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
   ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
-  ind.push({ nome: "IPCA", valor: "0,38%", var: "-0,05%", positivo: false });
-  const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
-  ind.push({ nome: "Dólar", valor: `R$ ${usd.preco.toFixed(2)}`, var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`, positivo: usd.variacao >= 0 });
+  ind.push({ nome: "IPCA", valor: "4,20%", var: "-0,10%", positivo: false });
+  if (ind.length < 4) {
+    ind.unshift({ nome: "IBOV", valor: "128.500", var: "+0,82%", positivo: true },
+                { nome: "IFIX", valor: "3.150", var: "+0,35%", positivo: true },
+                { nome: "Dólar", valor: "R$ 5,12", var: "-0,34%", positivo: false });
+  }
   res.json(ind);
 });
 
 // ===== NOTÍCIAS =====
 app.get("/noticias", async (_, res) => {
   const noticias = [
-    { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "O índice renovou máxima com fluxo estrangeiro positivo." },
-    { titulo: "S&P 500 atinge novo recorde histórico impulsionado por tecnologia", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
-    { titulo: "Dólar recua com entrada de capital e melhora do cenário fiscal", fonte: "Reuters", resumo: "Moeda americana acumula queda de 1,2% na semana." },
-    { titulo: "Petrobras anuncia pagamento de dividendos bilionários", fonte: "Exame", resumo: "Estatal distribuirá R$ 15 bilhões aos acionistas." }
+    { titulo: "Ibovespa fecha em alta", fonte: "InfoMoney", resumo: "Índice renova máxima com fluxo estrangeiro positivo." },
+    { titulo: "S&P 500 atinge recorde", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
+    { titulo: "Dólar recua", fonte: "Reuters", resumo: "Moeda americana acumula queda de 1,2% na semana." },
+    { titulo: "Petrobras distribui dividendos", fonte: "Exame", resumo: "Estatal pagará R$ 15 bilhões aos acionistas." }
   ];
   res.json(noticias);
 });
