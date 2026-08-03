@@ -5,30 +5,60 @@ process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const helmet = require("helmet");
 const supabase = require("./supabase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 const authMiddleware = require("./middleware/auth");
 
 const app = express();
-app.use(cors());
+
+// Segurança de cabeçalhos
+app.use(helmet());
+
+// CORS restrito – permitir apenas o frontend da Atlax
+const FRONTEND_URLS = process.env.FRONTEND_URLS
+  ? process.env.FRONTEND_URLS.split(",")
+  : ["http://localhost:5000", "http://localhost:3000"]; // fallback só para dev local
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // permitir origens sem origin (ex: apps mobile ou server-side)
+    if (!origin || FRONTEND_URLS.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`🚫 CORS bloqueado para origem: ${origin}`);
+      callback(new Error("Origem não permitida"));
+    }
+  },
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
 app.use(express.json());
 
 console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
 
 const {
-  MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY,
-  BELVO_SECRET_ID, BELVO_SECRET_PASSWORD,
-  NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET,
+  MP_TOKEN,
+  BRAPI_API_KEY,
+  ALPHA_VANTAGE_API_KEY,
+  BELVO_SECRET_ID,
+  BELVO_SECRET_PASSWORD,
+  NOWPAYMENTS_API_KEY,
+  NOWPAYMENTS_IPN_SECRET,
   GEMINI_API_KEY
 } = process.env;
+
+// Validações obrigatórias em produção (comente se estiver em dev local)
+if (!NOWPAYMENTS_API_KEY) console.warn("⚠️ NOWPAYMENTS_API_KEY não configurada – depósito cripto ficará offline.");
+if (!MP_TOKEN) console.warn("⚠️ MP_TOKEN não configurada – depósito PIX ficará offline.");
+if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não configurada – IA ficará offline.");
 
 const TAXA_DEPOSITO = 0.10;
 const TAXA_SAQUE = 0.10;
 const SAQUE_MINIMO = 100;
 
-const NP_API_KEY = NOWPAYMENTS_API_KEY || "X8W9RCR-8FBMAZE-JY5M30C-7BTTZ5T";
-const NP_IPN_SECRET = NOWPAYMENTS_IPN_SECRET || "RqofPHswoZPO4xypGzxBkoKyNtf0px8w";
-
+// --- Mercado Pago ---
 let payment = null;
 if (MP_TOKEN) {
   const client = new MercadoPagoConfig({ accessToken: MP_TOKEN });
@@ -36,6 +66,7 @@ if (MP_TOKEN) {
   console.log("💳 MP configurado");
 }
 
+// --- Cliente Belvo ---
 const BELVO_API_URL = "https://sandbox.belvo.com";
 const BELVO_AUTH = BELVO_SECRET_ID && BELVO_SECRET_PASSWORD ? {
   auth: { username: BELVO_SECRET_ID, password: BELVO_SECRET_PASSWORD }
@@ -109,7 +140,7 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
-// ===== ROTAS BÁSICAS =====
+// ===== ROTAS =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
 app.get("/cotacoes", async (_, res) => {
@@ -129,29 +160,9 @@ app.get("/extrato/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
-// ===== PERFIL =====
-app.get("/perfil/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
-  res.json(data || {});
-});
-
-app.put("/perfil/:uid", authMiddleware, async (req, res) => {
-  const { nome, email, telefone, bio, foto } = req.body;
-  const updates = {};
-  if (nome !== undefined) updates.nome = nome;
-  if (email !== undefined) updates.email = email;
-  if (telefone !== undefined) updates.telefone = telefone;
-  if (bio !== undefined) updates.bio = bio;
-  if (foto !== undefined) updates.foto = foto;
-  const { error } = await supabase.from("usuarios").update(updates).eq("id", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao atualizar perfil" });
-  res.json({ ok: true });
-});
-
-// ===== DEPÓSITO PIX =====
 app.post("/deposito", authMiddleware, async (req, res) => {
   try {
-    if (!payment) return res.status(500).json({ erro: "MP não configurado" });
+    if (!payment) return res.status(500).json({ erro: "Método de pagamento indisponível" });
     const { valor } = req.body;
     if (!valor || valor <= 0) return res.status(400).json({ erro: "Valor inválido" });
 
@@ -168,7 +179,7 @@ app.post("/deposito", authMiddleware, async (req, res) => {
 
 app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
-    if (!payment) return res.status(500).json({ erro: "MP não configurado" });
+    if (!payment) return res.status(500).json({ erro: "Método de pagamento indisponível" });
     const pagamento = await payment.get({ id: req.params.id });
     let saldoAtualizado = null;
     if (pagamento.status === "approved") {
@@ -194,32 +205,57 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+app.post("/investir", authMiddleware, async (req, res) => {
+  try {
+    const { tipo, valor } = req.body;
+    const uid = req.user.uid;
+    if (!tipo || isNaN(valor) || Number(valor) <= 0) return res.status(400).json({ erro: "Valor inválido" });
+    const { data, error } = await supabase.rpc("realizar_investimento", {
+      p_uid: uid, p_tipo: tipo.toLowerCase().replace(/\s/g,""), p_valor: Number(valor)
+    });
+    if (error) return res.status(500).json({ erro: "Erro no servidor" });
+    if (data?.erro) return res.status(400).json({ erro: data.erro });
+    res.json({ ok: true, novo_saldo: data.novo_saldo });
+  } catch (err) {
+    res.status(500).json({ erro: "Erro interno" });
+  }
+});
+
 app.post("/saque", authMiddleware, async (req, res) => {
   try {
     const { valor, pix } = req.body;
     const uid = req.user.uid;
+
     const valorSaque = Number(valor);
     if (!valorSaque || valorSaque < SAQUE_MINIMO) {
       return res.status(400).json({ erro: `Valor mínimo para saque é R$ ${SAQUE_MINIMO}` });
     }
+
     const taxa = valorSaque * TAXA_SAQUE;
     const valorTotal = valorSaque + taxa;
+
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
     if (!user || user.saldo == null || user.saldo < valorTotal) {
       return res.status(400).json({ erro: `Saldo insuficiente. Necessário R$ ${valorTotal.toFixed(2)} (já com taxa de 10%)` });
     }
+
     const novoSaldo = user.saldo - valorTotal;
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("transactions").insert([
       { uid, tipo: "saque", valor: valorSaque, status: "pendente", categoria: pix || "pix" },
       { uid: "admin", tipo: "taxa_saque", valor: taxa, status: "aprovado", categoria: "taxa" }
     ]);
+
     res.json({ ok: true, taxa, valorLiquido: valorSaque, valorTotal });
-  } catch (e) { res.status(500).json({ erro: "Erro interno" }); }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ erro: "Erro interno" });
+  }
 });
 
 // ===== DEPÓSITO CRIPTO =====
 app.post("/deposito-cripto", authMiddleware, async (req, res) => {
+  if (!NOWPAYMENTS_API_KEY) return res.status(500).json({ erro: "Depósito cripto indisponível" });
   try {
     const { currency, amount } = req.body;
     const uid = req.user.uid;
@@ -239,7 +275,7 @@ app.post("/deposito-cripto", authMiddleware, async (req, res) => {
       price_amount: amount, price_currency: "brl", pay_currency: currency.toLowerCase(),
       pay_amount: amountCrypto, ipn_callback_url: `${req.protocol}://${req.get("host")}/webhook/nowpayments`,
       order_id: `dep-${uid}-${Date.now()}`, order_description: "Depósito Atlax AI"
-    }, { headers: { "x-api-key": NP_API_KEY, "Content-Type": "application/json" } });
+    }, { headers: { "x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json" } });
 
     const paymentData = paymentResponse.data;
     await supabase.from("cripto_depositos").insert({
@@ -310,7 +346,7 @@ app.post("/investir-fundo", authMiddleware, async (req, res) => {
   const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
   if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
 
-  const cotas = valor / (fundo.rentabilidade_12m ? 100 : 100); // simplificado: cada cota = R$ 100
+  const cotas = valor / 100; // simplificado
   const novoSaldo = user.saldo - valor;
 
   await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
@@ -456,7 +492,7 @@ app.post("/cartao", authMiddleware, async (req, res) => {
 });
 
 app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo não configurado" });
+  if (!BELVO_AUTH) return res.status(500).json({ erro: "Serviço de conexão bancária indisponível" });
   try {
     const response = await axios.post(`${BELVO_API_URL}/api/token`, {
       id: "atlax-connect",
@@ -516,7 +552,7 @@ app.get("/belvo/faturas/:linkId/:accountId", authMiddleware, async (req, res) =>
 
 // ===== IA (GEMINI) =====
 app.post("/ia/perguntar", authMiddleware, async (req, res) => {
-  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA não configurada" });
+  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "Assistente IA indisponível" });
   try {
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -531,7 +567,7 @@ app.post("/ia/perguntar", authMiddleware, async (req, res) => {
 });
 
 app.post("/ia/analisar", authMiddleware, async (req, res) => {
-  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA não configurada" });
+  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "Assistente IA indisponível" });
   try {
     const { data: user } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
     const { data: transacoes } = await supabase.from("transactions").select("*").eq("uid", req.user.uid).limit(20);
@@ -585,7 +621,7 @@ app.post("/coins/adicionar", authMiddleware, async (req, res) => {
 app.post("/coins/resgatar", authMiddleware, async (req, res) => {
   const { quantidade } = req.body;
   const uid = req.user.uid;
-  const taxa_conversao = 0.05; // R$ 0,05 por coin
+  const taxa_conversao = 0.05;
   const { data: user } = await supabase.from("usuarios").select("atlax_coins, saldo").eq("id", uid).single();
   if (!user || (user.atlax_coins || 0) < quantidade) return res.status(400).json({ erro: "Coins insuficientes" });
   const valor_creditado = quantidade * taxa_conversao;
@@ -597,44 +633,27 @@ app.post("/coins/resgatar", authMiddleware, async (req, res) => {
   res.json({ ok: true, valor_creditado });
 });
 
-// ===== INDICADORES DE MERCADO =====
+// ===== INDICADORES =====
 app.get("/indicadores", async (_, res) => {
   const ind = [];
-  // SELIC, CDI, IPCA via Brapi (se key existir)
-  if (BRAPI_API_KEY) {
-    try {
-      const { data } = await axios.get("https://brapi.dev/api/v2/prime-rate", { params: { token: BRAPI_API_KEY } });
-      // Brapi não tem SELIC direto, vamos usar IBOV e IFIX que já buscamos
-    } catch (e) {}
-  }
-  // Usar dados do banco (cotações) ou fallback para valores padrão
   const { data: cotacoes } = await supabase.from("cotacoes").select("*");
   const mapa = {};
   cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
 
-  // IBOV
   const ibov = mapa["IBOV"] || { preco: 128500, variacao: 0.82 };
   ind.push({ nome: "IBOV", valor: ibov.preco.toLocaleString("pt-BR"), var: `${ibov.variacao >= 0 ? '+' : ''}${ibov.variacao.toFixed(2)}%`, positivo: ibov.variacao >= 0 });
-  // IFIX
   const ifix = mapa["IFIX"] || { preco: 3150, variacao: 0.35 };
   ind.push({ nome: "IFIX", valor: ifix.preco.toFixed(0), var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`, positivo: ifix.variacao >= 0 });
-  // SELIC (fixo, mas poderia vir da Brapi)
   ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
-  // CDI
   ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
-  // IPCA (mensal)
   ind.push({ nome: "IPCA", valor: "0,38%", var: "-0,05%", positivo: false });
-  // Dólar
   const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
   ind.push({ nome: "Dólar", valor: `R$ ${usd.preco.toFixed(2)}`, var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`, positivo: usd.variacao >= 0 });
-
   res.json(ind);
 });
 
 // ===== NOTÍCIAS =====
 app.get("/noticias", async (_, res) => {
-  // Tentar buscar notícias reais se tiver chave (ex: Brapi não tem notícias públicas, vamos usar Alpha Vantage ou NewsAPI)
-  // Como fallback, retornamos algumas manchetes genéricas
   const noticias = [
     { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "O índice renovou máxima com fluxo estrangeiro positivo." },
     { titulo: "S&P 500 atinge novo recorde histórico impulsionado por tecnologia", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
@@ -642,6 +661,25 @@ app.get("/noticias", async (_, res) => {
     { titulo: "Petrobras anuncia pagamento de dividendos bilionários", fonte: "Exame", resumo: "Estatal distribuirá R$ 15 bilhões aos acionistas." }
   ];
   res.json(noticias);
+});
+
+// ===== PERFIL =====
+app.get("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
+  res.json(data || {});
+});
+
+app.put("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { nome, email, telefone, bio, foto } = req.body;
+  const updates = {};
+  if (nome !== undefined) updates.nome = nome;
+  if (email !== undefined) updates.email = email;
+  if (telefone !== undefined) updates.telefone = telefone;
+  if (bio !== undefined) updates.bio = bio;
+  if (foto !== undefined) updates.foto = foto;
+  const { error } = await supabase.from("usuarios").update(updates).eq("id", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao atualizar perfil" });
+  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 5000;
