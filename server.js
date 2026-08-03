@@ -5,21 +5,29 @@ process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const helmet = require("helmet");
 const supabase = require("./supabase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 const authMiddleware = require("./middleware/auth");
 
 const app = express();
 
-// CORS restrito – permitir apenas o frontend da Atlax
+// Headers de segurança manuais (sem dependência helmet)
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  next();
+});
+
+// CORS restrito
 const FRONTEND_URLS = process.env.FRONTEND_URLS
   ? process.env.FRONTEND_URLS.split(",")
-  : ["http://localhost:5000", "http://localhost:3000"]; // fallback só para dev local
+  : ["http://localhost:5000", "http://localhost:3000"];
 
 app.use(cors({
   origin: (origin, callback) => {
-    // permitir origens sem origin (ex: apps mobile ou server-side)
     if (!origin || FRONTEND_URLS.includes(origin)) {
       callback(null, true);
     } else {
@@ -32,16 +40,6 @@ app.use(cors({
 }));
 
 app.use(express.json());
-
-// Headers de segurança (sem dependência extra)
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "0");
-  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
-});
 
 console.log("📌 Supabase:", process.env.SUPABASE_URL ? "configurado" : "NÃO configurado");
 
@@ -56,7 +54,6 @@ const {
   GEMINI_API_KEY
 } = process.env;
 
-// Validações obrigatórias em produção (comente se estiver em dev local)
 if (!NOWPAYMENTS_API_KEY) console.warn("⚠️ NOWPAYMENTS_API_KEY não configurada – depósito cripto ficará offline.");
 if (!MP_TOKEN) console.warn("⚠️ MP_TOKEN não configurada – depósito PIX ficará offline.");
 if (!GEMINI_API_KEY) console.warn("⚠️ GEMINI_API_KEY não configurada – IA ficará offline.");
@@ -147,7 +144,7 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
-// ===== ROTAS =====
+// ===== ROTAS BÁSICAS =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
 app.get("/cotacoes", async (_, res) => {
@@ -167,6 +164,26 @@ app.get("/extrato/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
+// ===== PERFIL =====
+app.get("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
+  res.json(data || {});
+});
+
+app.put("/perfil/:uid", authMiddleware, async (req, res) => {
+  const { nome, email, telefone, bio, foto } = req.body;
+  const updates = {};
+  if (nome !== undefined) updates.nome = nome;
+  if (email !== undefined) updates.email = email;
+  if (telefone !== undefined) updates.telefone = telefone;
+  if (bio !== undefined) updates.bio = bio;
+  if (foto !== undefined) updates.foto = foto;
+  const { error } = await supabase.from("usuarios").update(updates).eq("id", req.user.uid);
+  if (error) return res.status(500).json({ erro: "Erro ao atualizar perfil" });
+  res.json({ ok: true });
+});
+
+// ===== DEPÓSITO PIX =====
 app.post("/deposito", authMiddleware, async (req, res) => {
   try {
     if (!payment) return res.status(500).json({ erro: "Método de pagamento indisponível" });
@@ -212,6 +229,32 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+// ===== SAQUE (com taxa 10% e mínimo R$100) =====
+app.post("/saque", authMiddleware, async (req, res) => {
+  try {
+    const { valor, pix } = req.body;
+    const uid = req.user.uid;
+    const valorSaque = Number(valor);
+    if (!valorSaque || valorSaque < SAQUE_MINIMO) {
+      return res.status(400).json({ erro: `Valor mínimo para saque é R$ ${SAQUE_MINIMO}` });
+    }
+    const taxa = valorSaque * TAXA_SAQUE;
+    const valorTotal = valorSaque + taxa;
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (!user || user.saldo == null || user.saldo < valorTotal) {
+      return res.status(400).json({ erro: `Saldo insuficiente. Necessário R$ ${valorTotal.toFixed(2)} (já com taxa de 10%)` });
+    }
+    const novoSaldo = user.saldo - valorTotal;
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("transactions").insert([
+      { uid, tipo: "saque", valor: valorSaque, status: "pendente", categoria: pix || "pix" },
+      { uid: "admin", tipo: "taxa_saque", valor: taxa, status: "aprovado", categoria: "taxa" }
+    ]);
+    res.json({ ok: true, taxa, valorLiquido: valorSaque, valorTotal });
+  } catch (e) { res.status(500).json({ erro: "Erro interno" }); }
+});
+
+// ===== INVESTIR (genérico) =====
 app.post("/investir", authMiddleware, async (req, res) => {
   try {
     const { tipo, valor } = req.body;
@@ -224,38 +267,6 @@ app.post("/investir", authMiddleware, async (req, res) => {
     if (data?.erro) return res.status(400).json({ erro: data.erro });
     res.json({ ok: true, novo_saldo: data.novo_saldo });
   } catch (err) {
-    res.status(500).json({ erro: "Erro interno" });
-  }
-});
-
-app.post("/saque", authMiddleware, async (req, res) => {
-  try {
-    const { valor, pix } = req.body;
-    const uid = req.user.uid;
-
-    const valorSaque = Number(valor);
-    if (!valorSaque || valorSaque < SAQUE_MINIMO) {
-      return res.status(400).json({ erro: `Valor mínimo para saque é R$ ${SAQUE_MINIMO}` });
-    }
-
-    const taxa = valorSaque * TAXA_SAQUE;
-    const valorTotal = valorSaque + taxa;
-
-    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-    if (!user || user.saldo == null || user.saldo < valorTotal) {
-      return res.status(400).json({ erro: `Saldo insuficiente. Necessário R$ ${valorTotal.toFixed(2)} (já com taxa de 10%)` });
-    }
-
-    const novoSaldo = user.saldo - valorTotal;
-    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-    await supabase.from("transactions").insert([
-      { uid, tipo: "saque", valor: valorSaque, status: "pendente", categoria: pix || "pix" },
-      { uid: "admin", tipo: "taxa_saque", valor: taxa, status: "aprovado", categoria: "taxa" }
-    ]);
-
-    res.json({ ok: true, taxa, valorLiquido: valorSaque, valorTotal });
-  } catch (e) {
-    console.error(e);
     res.status(500).json({ erro: "Erro interno" });
   }
 });
@@ -353,7 +364,7 @@ app.post("/investir-fundo", authMiddleware, async (req, res) => {
   const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
   if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
 
-  const cotas = valor / 100; // simplificado
+  const cotas = valor / 100;
   const novoSaldo = user.saldo - valor;
 
   await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
@@ -668,25 +679,6 @@ app.get("/noticias", async (_, res) => {
     { titulo: "Petrobras anuncia pagamento de dividendos bilionários", fonte: "Exame", resumo: "Estatal distribuirá R$ 15 bilhões aos acionistas." }
   ];
   res.json(noticias);
-});
-
-// ===== PERFIL =====
-app.get("/perfil/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
-  res.json(data || {});
-});
-
-app.put("/perfil/:uid", authMiddleware, async (req, res) => {
-  const { nome, email, telefone, bio, foto } = req.body;
-  const updates = {};
-  if (nome !== undefined) updates.nome = nome;
-  if (email !== undefined) updates.email = email;
-  if (telefone !== undefined) updates.telefone = telefone;
-  if (bio !== undefined) updates.bio = bio;
-  if (foto !== undefined) updates.foto = foto;
-  const { error } = await supabase.from("usuarios").update(updates).eq("id", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao atualizar perfil" });
-  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 5000;
