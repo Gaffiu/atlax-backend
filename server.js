@@ -553,25 +553,38 @@ app.delete("/aporte-automatico/:id", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ===== ORDENS AUTOMÁTICAS =====
 app.get("/ordens-automaticas/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("ordens_automaticas").select("*, fundos(nome, ticker)").eq("uid", req.user.uid).eq("ativo", true);
+  const { data } = await supabase.from("ordens_automaticas")
+    .select("*, fundos(nome, ticker)")
+    .eq("uid", req.user.uid)
+    .order("criado_em", { ascending: false });
+
+  // Para cada ordem ativa, tenta obter a rentabilidade atual
+  if (BRAPI_API_KEY) {
+    for (const ordem of data || []) {
+      if (ordem.ativo && ordem.fundos?.ticker) {
+        try {
+          const ticker = ordem.fundos.ticker;
+          // Verificar na carteira do usuário
+          const { data: inv } = await supabase.from("renda_variavel_investimentos")
+            .select("preco_medio").eq("uid", req.user.uid).eq("ticker", ticker).eq("status", "ativo").single();
+
+          if (inv?.preco_medio) {
+            const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+              params: { token: BRAPI_API_KEY }
+            });
+            const precoAtual = cot?.results?.[0]?.regularMarketPrice;
+            if (precoAtual) {
+              ordem._rentabilidadeAtual = (((precoAtual - inv.preco_medio) / inv.preco_medio) * 100).toFixed(2);
+              ordem._precoAtual = precoAtual;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
   res.json(data || []);
-});
-
-app.post("/ordem-automatica", authMiddleware, async (req, res) => {
-  const { fundo_id, tipo, rentabilidade_acionadora } = req.body;
-  const { error } = await supabase.from("ordens_automaticas").insert({
-    uid: req.user.uid, fundo_id, tipo, rentabilidade_acionadora
-  });
-  if (error) return res.status(500).json({ erro: "Erro ao criar ordem" });
-  res.json({ ok: true });
-});
-
-app.delete("/ordem-automatica/:id", authMiddleware, async (req, res) => {
-  const { error } = await supabase.from("ordens_automaticas").update({ ativo: false }).eq("id", req.params.id).eq("uid", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao cancelar" });
-  res.json({ ok: true });
 });
 
 // ===== COMPARADOR =====
@@ -1323,6 +1336,162 @@ app.post("/cripto/vender", authMiddleware, async (req, res) => {
     res.status(500).json({ erro: "Erro ao processar venda" });
   }
 });
+
+// ==========================================
+// MOTOR DE ORDENS AUTOMÁTICAS
+// ==========================================
+async function executarOrdensAutomaticas() {
+  console.log("⏳ [ORDENS] Verificando ordens automáticas...");
+
+  try {
+    // Buscar todas as ordens ativas
+    const { data: ordens } = await supabase.from("ordens_automaticas")
+      .select("*, fundos(*)")
+      .eq("ativo", true);
+
+    if (!ordens || ordens.length === 0) {
+      console.log("  📭 Nenhuma ordem ativa encontrada.");
+      return;
+    }
+
+    console.log(`  🔍 ${ordens.length} ordem(ns) ativa(s) para verificar.`);
+
+    for (const ordem of ordens) {
+      try {
+        const uid = ordem.uid;
+        const fundo = ordem.fundos;
+        if (!fundo) continue;
+
+        const ticker = fundo.ticker;
+        const tipo = ordem.tipo; // "stop_loss" ou "stop_gain"
+        const rentabilidadeAlvo = ordem.rentabilidade_acionadora;
+
+        // Verificar em qual carteira o usuário tem esse ativo
+        // 1. Renda Variável
+        const { data: investimentoRV } = await supabase.from("renda_variavel_investimentos")
+          .select("*").eq("uid", uid).eq("ticker", ticker).eq("status", "ativo").single();
+
+        let precoAtual = null;
+        let precoMedio = null;
+        let quantidade = null;
+        let investimentoId = null;
+        let tipoCarteira = null;
+
+        if (investimentoRV) {
+          tipoCarteira = "rv";
+          precoMedio = investimentoRV.preco_medio;
+          quantidade = investimentoRV.quantidade;
+          investimentoId = investimentoRV.id;
+
+          // Buscar cotação atual na Brapi
+          if (BRAPI_API_KEY) {
+            try {
+              const { data: cotData } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+                params: { token: BRAPI_API_KEY }
+              });
+              precoAtual = cotData?.results?.[0]?.regularMarketPrice;
+            } catch (e) {
+              console.warn(`  ⚠️ Não foi possível obter cotação de ${ticker}`);
+            }
+          }
+        } else {
+          // 2. Cripto
+          const { data: investimentoCripto } = await supabase.from("cripto_investimentos")
+            .select("*").eq("uid", uid).eq("ticker", ticker).eq("status", "ativo").single();
+
+          if (investimentoCripto) {
+            tipoCarteira = "cripto";
+            precoMedio = investimentoCripto.preco_medio;
+            quantidade = investimentoCripto.quantidade_cripto;
+            investimentoId = investimentoCripto.id;
+
+            // Buscar cotação na CoinGecko
+            const ids = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDT: "tether", LTC: "litecoin", DOGE: "dogecoin" };
+            const coinId = ids[ticker.toUpperCase()] || ticker.toLowerCase();
+            try {
+              const { data: cgData } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
+                params: { ids: coinId, vs_currencies: "brl" }
+              });
+              precoAtual = cgData[coinId]?.brl;
+            } catch (e) {
+              console.warn(`  ⚠️ Não foi possível obter cotação de ${ticker} (cripto)`);
+            }
+          }
+        }
+
+        // Se não encontrou o investimento em nenhuma carteira, pula
+        if (!investimentoId || !precoAtual || !precoMedio) {
+          console.log(`  ⏭️ ${ticker}: sem investimento ativo ou cotação indisponível.`);
+          continue;
+        }
+
+        // Calcular rentabilidade atual
+        const rentabilidadeAtual = ((precoAtual - precoMedio) / precoMedio) * 100;
+
+        console.log(`  📊 ${ticker}: Preço Médio R$ ${precoMedio.toFixed(2)} | Preço Atual R$ ${precoAtual.toFixed(2)} | Rent. ${rentabilidadeAtual.toFixed(2)}% | Alvo (${tipo}) ${rentabilidadeAlvo}%`);
+
+        let executar = false;
+
+        if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) {
+          console.log(`  🛑 STOP LOSS atingido para ${ticker}!`);
+          executar = true;
+        } else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) {
+          console.log(`  🎯 STOP GAIN atingido para ${ticker}!`);
+          executar = true;
+        }
+
+        if (executar) {
+          const valorVenda = precoAtual * quantidade;
+          const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+          const novoSaldo = (user?.saldo ?? 0) + valorVenda;
+
+          // Atualizar saldo do usuário
+          await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+
+          // Atualizar carteira conforme o tipo
+          if (tipoCarteira === "rv") {
+            await supabase.from("renda_variavel_investimentos").update({ status: "vendido" }).eq("id", investimentoId);
+            await supabase.from("transactions").insert({
+              uid, tipo: "venda_rv_auto", valor: valorVenda, status: "aprovado",
+              categoria: `${ticker} (${tipo === "stop_loss" ? "Stop Loss" : "Stop Gain"})`
+            });
+          } else if (tipoCarteira === "cripto") {
+            await supabase.from("cripto_investimentos").update({ status: "vendido" }).eq("id", investimentoId);
+            await supabase.from("transactions").insert({
+              uid, tipo: "venda_cripto_auto", valor: valorVenda, status: "aprovado",
+              categoria: `${ticker} (${tipo === "stop_loss" ? "Stop Loss" : "Stop Gain"})`
+            });
+          }
+
+          // Marcar ordem como executada
+          await supabase.from("ordens_automaticas").update({
+            ativo: false,
+            status: "executada",
+            data_execucao: new Date(),
+            preco_execucao: precoAtual,
+            rentabilidade_execucao: rentabilidadeAtual
+          }).eq("id", ordem.id);
+
+          console.log(`  ✅ Ordem ${ordem.id} executada com sucesso! Venda de R$ ${valorVenda.toFixed(2)}`);
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ Erro ao processar ordem ${ordem.id}: ${e.message}`);
+      }
+      // Pequena pausa entre verificações
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    console.log("✅ [ORDENS] Verificação concluída.");
+  } catch (e) {
+    console.error("❌ [ORDENS] Erro geral:", e.message);
+  }
+}
+
+// ===== AGENDAR EXECUÇÃO DAS ORDENS =====
+// Executa a cada 5 minutos
+setInterval(executarOrdensAutomaticas, 5 * 60 * 1000);
+// Primeira execução após 30 segundos do startup
+setTimeout(executarOrdensAutomaticas, 30000);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
