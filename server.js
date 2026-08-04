@@ -926,11 +926,154 @@ app.get("/noticias", async (_, res) => {
   res.json(noticias);
 });
 
-// ===== INICIALIZAÇÃO =====
-// Aguarda 10s para garantir que as tabelas de cotacoes estejam populadas
-setTimeout(atualizarPrecosFundos, 10000);
-// Atualiza a cada 2 horas
-setInterval(atualizarPrecosFundos, 120 * 60 * 1000);
+// ========== ATUALIZAR RENTABILIDADES 12M (CÁLCULO REAL) ==========
+async function atualizarRentabilidades() {
+  console.log("📊 [RENTABILIDADES] Calculando rentabilidades 12m...");
+
+  if (!BRAPI_API_KEY) {
+    console.warn("⚠️ BRAPI_API_KEY não configurada. Pulando cálculo de rentabilidades.");
+    return;
+  }
+
+  // Lista de tickers que queremos calcular (ações, ETFs, FIIs, BDRs, criptos)
+  const tickersParaCalcular = [
+    // Ações
+    "PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "WEGE3", "MGLU3",
+    // ETFs
+    "BOVA11", "SMAL11", "IVVB11", "FIND11",
+    // FIIs
+    "HGLG11", "KNRI11", "MXRF11", "XPLG11", "VISC11",
+    // BDRs
+    "AAPL34", "TSLA34", "GOGL34", "AMZO34", "MSFT34"
+  ];
+
+  for (const ticker of tickersParaCalcular) {
+    try {
+      // Buscar cotação atual
+      const { data: dataAtual } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+        params: { token: BRAPI_API_KEY }
+      });
+      const precoAtual = dataAtual?.results?.[0]?.regularMarketPrice;
+      if (!precoAtual) continue;
+
+      // Buscar cotação de 12 meses atrás
+      const data12mAtual = new Date();
+      data12mAtual.setFullYear(data12mAtual.getFullYear() - 1);
+      const data12mStr = data12mAtual.toISOString().split("T")[0];
+
+      const { data: dataHistorica } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+        params: {
+          token: BRAPI_API_KEY,
+          range: "1y",
+          interval: "1d"
+        }
+      });
+
+      const historico = dataHistorica?.results?.[0]?.historicalDataPrice;
+      if (historico && historico.length > 0) {
+        // Pegar o preço mais próximo de 12 meses atrás (primeiro disponível)
+        const precoAntigo = historico[0]?.close;
+        if (precoAntigo && precoAntigo > 0) {
+          const rentabilidade = ((precoAtual - precoAntigo) / precoAntigo) * 100;
+          await supabase.from("fundos").update({
+            rentabilidade_12m: parseFloat(rentabilidade.toFixed(2)),
+            preco: precoAtual,
+            variacao: dataAtual?.results?.[0]?.regularMarketChangePercent || 0
+          }).eq("ticker", ticker);
+          console.log(`  📈 ${ticker}: rentabilidade 12m = ${rentabilidade.toFixed(2)}%`);
+        }
+      }
+    } catch (e) {
+      console.warn(`  ⚠️ Erro ao calcular rentabilidade de ${ticker}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  // Criptos: calcular rentabilidade 12m via CoinGecko
+  const criptosParaCalcular = ["bitcoin", "ethereum", "solana"];
+  for (const coinId of criptosParaCalcular) {
+    try {
+      const ticker = coinId === "bitcoin" ? "BTC" : coinId === "ethereum" ? "ETH" : "SOL";
+      
+      // Buscar dados históricos de 12 meses via CoinGecko
+      const { data: dadosHist } = await axios.get(
+        `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart/range`, {
+          params: {
+            vs_currency: "brl",
+            from: Math.floor(Date.now() / 1000) - 365 * 24 * 60 * 60,
+            to: Math.floor(Date.now() / 1000)
+          }
+        }
+      );
+
+      if (dadosHist?.prices && dadosHist.prices.length > 0) {
+        const precoAntigo = dadosHist.prices[0][1];
+        const precoAtual = dadosHist.prices[dadosHist.prices.length - 1][1];
+        
+        if (precoAntigo > 0) {
+          const rentabilidade = ((precoAtual - precoAntigo) / precoAntigo) * 100;
+          await supabase.from("fundos").update({
+            rentabilidade_12m: parseFloat(rentabilidade.toFixed(2))
+          }).eq("ticker", ticker);
+          console.log(`  🪙 ${ticker}: rentabilidade 12m = ${rentabilidade.toFixed(2)}%`);
+        }
+      }
+    } catch (e) {
+      console.warn(`  ⚠️ Erro ao calcular rentabilidade de ${coinId}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  console.log("📊 [RENTABILIDADES] Cálculo concluído!");
+}
+
+// Executa atualizações 10s após iniciar
+setTimeout(() => {
+  atualizarPrecosFundos();
+  atualizarRentabilidades(); // Calcula rentabilidades 12m na inicialização
+}, 10000);
+
+// Atualiza preços a cada 30 minutos
+setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
+
+// Atualiza rentabilidades 12m uma vez por dia (a cada 24h)
+setInterval(atualizarRentabilidades, 24 * 60 * 60 * 1000);
+
+// ===== TAXAS RENDA FIXA (DINÂMICAS BASEADAS NA SELIC/CDI) =====
+app.get("/taxas-renda-fixa", async (_, res) => {
+  let selic = 10.50; // valor padrão
+  let cdi = 10.40;
+
+  if (BRAPI_API_KEY) {
+    try {
+      const selicRes = await axios.get("https://brapi.dev/api/v2/prime-rate", {
+        params: { token: BRAPI_API_KEY }
+      });
+      selic = selicRes.data?.prime_rate?.[0]?.value || 10.50;
+      cdi = selic - 0.10;
+    } catch (e) {
+      console.warn("Erro ao buscar SELIC para taxas de renda fixa:", e.message);
+    }
+  }
+
+  res.json({
+    selic: parseFloat(selic.toFixed(2)),
+    cdi: parseFloat(cdi.toFixed(2)),
+    taxas: {
+      cdb_100: parseFloat((cdi * 1.0).toFixed(2)),
+      cdb_110: parseFloat((cdi * 1.1).toFixed(2)),
+      cdb_120: parseFloat((cdi * 1.2).toFixed(2)),
+      tesouro_selic: parseFloat((selic * 1.0).toFixed(2)),
+      tesouro_ipca: parseFloat((5.5 + 0.38).toFixed(2)), // IPCA atual + taxa real
+      lci_90: parseFloat((cdi * 0.9).toFixed(2)),
+      lca_92: parseFloat((cdi * 0.92).toFixed(2)),
+      cri_ipca: parseFloat((6.5 + 0.38).toFixed(2)),
+      cra_cdi: parseFloat((cdi * 1.02).toFixed(2)),
+      deb_infra: parseFloat((cdi * 1.15).toFixed(2)),
+      deb_energia: parseFloat((cdi * 1.1).toFixed(2))
+    }
+  });
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
