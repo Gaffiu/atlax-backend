@@ -1078,5 +1078,251 @@ app.get("/taxas-renda-fixa", async (_, res) => {
   });
 });
 
+// ==========================================
+// RENDA FIXA – Comprar / Carteira / Resgatar
+// ==========================================
+app.post("/renda-fixa/aplicar", authMiddleware, async (req, res) => {
+  const { ticker, valor } = req.body;
+  const uid = req.user.uid;
+  if (!ticker || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
+
+  // Obter rentabilidade atual da tabela fundos
+  const { data: fundo } = await supabase.from("fundos").select("nome, rentabilidade_12m").eq("ticker", ticker).single();
+  if (!fundo) return res.status(400).json({ erro: "Ativo de renda fixa não encontrado" });
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+  const novoSaldo = user.saldo - valor;
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("renda_fixa_investimentos").insert({
+    uid, ticker, nome: fundo.nome, valor_aplicado: valor,
+    rentabilidade_contratada: fundo.rentabilidade_12m,
+    data_vencimento: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+  });
+  await supabase.from("transactions").insert({ uid, tipo: "investimento_rf", valor, status: "aprovado", categoria: ticker });
+  res.json({ ok: true, novo_saldo: novoSaldo });
+});
+
+app.get("/renda-fixa/carteira/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("renda_fixa_investimentos").select("*").eq("uid", req.user.uid).eq("status", "ativo");
+  res.json(data || []);
+});
+
+app.post("/renda-fixa/resgatar", authMiddleware, async (req, res) => {
+  const { investimento_id } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("renda_fixa_investimentos").select("*").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  // Calcular rendimento
+  const agora = new Date();
+  const dataAplicacao = new Date(inv.data_aplicacao);
+  const meses = (agora - dataAplicacao) / (30 * 24 * 60 * 60 * 1000);
+  const taxaMensal = Math.pow(1 + inv.rentabilidade_contratada / 100, 1 / 12) - 1;
+  const valorAtual = inv.valor_aplicado * Math.pow(1 + taxaMensal, Math.max(0, meses));
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  const novoSaldo = (user?.saldo ?? 0) + valorAtual;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("renda_fixa_investimentos").update({ status: "resgatado" }).eq("id", investimento_id);
+  await supabase.from("transactions").insert({ uid, tipo: "resgate_rf", valor: valorAtual, status: "aprovado" });
+
+  res.json({ ok: true, valor_resgate: valorAtual.toFixed(2) });
+});
+
+// ==========================================
+// RENDA VARIÁVEL – Comprar / Carteira / Vender
+// ==========================================
+app.post("/renda-variavel/comprar", authMiddleware, async (req, res) => {
+  const { ticker, valor } = req.body;
+  const uid = req.user.uid;
+  if (!ticker || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
+
+  if (!BRAPI_API_KEY) return res.status(500).json({ erro: "Serviço de cotação indisponível" });
+
+  try {
+    // Cotação em tempo real
+    const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
+    const preco = data?.results?.[0]?.regularMarketPrice;
+    if (!preco) return res.status(400).json({ erro: "Ativo não encontrado" });
+
+    const quantidade = valor / preco;
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+    const novoSaldo = user.saldo - valor;
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("renda_variavel_investimentos").insert({
+      uid, ticker, nome: ticker, quantidade, preco_medio: preco, valor_investido: valor
+    });
+    await supabase.from("transactions").insert({ uid, tipo: "investimento_rv", valor, status: "aprovado", categoria: ticker });
+    res.json({ ok: true, novo_saldo: novoSaldo, quantidade, preco });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao obter cotação" });
+  }
+});
+
+app.get("/renda-variavel/carteira/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("renda_variavel_investimentos").select("*").eq("uid", req.user.uid).eq("status", "ativo");
+  res.json(data || []);
+});
+
+app.post("/renda-variavel/vender", authMiddleware, async (req, res) => {
+  const { investimento_id } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("renda_variavel_investimentos").select("*").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  if (!BRAPI_API_KEY) return res.status(500).json({ erro: "Serviço de cotação indisponível" });
+
+  try {
+    const { data } = await axios.get(`https://brapi.dev/api/quote/${inv.ticker}`, { params: { token: BRAPI_API_KEY } });
+    const precoAtual = data?.results?.[0]?.regularMarketPrice;
+    if (!precoAtual) return res.status(400).json({ erro: "Erro ao obter cotação atual" });
+
+    const valorVenda = precoAtual * inv.quantidade;
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    const novoSaldo = (user?.saldo ?? 0) + valorVenda;
+
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("renda_variavel_investimentos").update({ status: "vendido" }).eq("id", investimento_id);
+    await supabase.from("transactions").insert({ uid, tipo: "venda_rv", valor: valorVenda, status: "aprovado", categoria: inv.ticker });
+    res.json({ ok: true, valor_venda: valorVenda.toFixed(2) });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao processar venda" });
+  }
+});
+
+// ==========================================
+// FUNDOS – Comprar / Carteira / Resgatar
+// ==========================================
+app.post("/fundos/aplicar", authMiddleware, async (req, res) => {
+  const { fundo_id, valor } = req.body;
+  const uid = req.user.uid;
+  if (!fundo_id || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
+
+  const { data: fundo } = await supabase.from("fundos").select("*").eq("id", fundo_id).single();
+  if (!fundo) return res.status(400).json({ erro: "Fundo não encontrado" });
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+  const cotas = valor / 100; // simplificação para fundos
+  const novoSaldo = user.saldo - valor;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  await supabase.from("fundos_investimentos").insert({
+    uid, fundo_id, cotas, valor_aplicado: valor, valor_atual: valor, rentabilidade: 0, status: "ativo"
+  });
+  await supabase.from("transactions").insert({ uid, tipo: "investimento_fundos", valor, status: "aprovado", categoria: fundo.nome });
+  res.json({ ok: true, novo_saldo: novoSaldo });
+});
+
+app.get("/fundos/carteira/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("fundos_investimentos").select("*, fundos(*)").eq("uid", req.user.uid).eq("status", "ativo");
+  res.json(data || []);
+});
+
+app.post("/fundos/resgatar", authMiddleware, async (req, res) => {
+  const { investimento_id, cotas_a_resgatar } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("fundos_investimentos").select("*").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  if (inv.cotas < cotas_a_resgatar) return res.status(400).json({ erro: "Cotas insuficientes" });
+
+  const valorPorCota = inv.valor_atual / inv.cotas;
+  const valorResgate = valorPorCota * cotas_a_resgatar;
+  const novasCotas = inv.cotas - cotas_a_resgatar;
+
+  const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+  const novoSaldo = (user?.saldo ?? 0) + valorResgate;
+
+  await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+  if (novasCotas <= 0) {
+    await supabase.from("fundos_investimentos").update({ status: "resgatado", cotas: 0 }).eq("id", investimento_id);
+  } else {
+    await supabase.from("fundos_investimentos").update({ cotas: novasCotas, valor_aplicado: inv.valor_aplicado - valorResgate, valor_atual: novasCotas * valorPorCota }).eq("id", investimento_id);
+  }
+  await supabase.from("transactions").insert({ uid, tipo: "resgate_fundos", valor: valorResgate, status: "aprovado" });
+  res.json({ ok: true, valor_resgate: valorResgate.toFixed(2) });
+});
+
+// ==========================================
+// CRIPTO – Comprar / Carteira / Vender
+// ==========================================
+app.post("/cripto/comprar", authMiddleware, async (req, res) => {
+  const { ticker, valor } = req.body;
+  const uid = req.user.uid;
+  if (!ticker || !valor || valor <= 0) return res.status(400).json({ erro: "Dados inválidos" });
+
+  try {
+    // Mapear ticker para CoinGecko ID
+    const ids = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDT: "tether", LTC: "litecoin", DOGE: "dogecoin" };
+    const coinId = ids[ticker.toUpperCase()] || ticker.toLowerCase();
+
+    const { data: precoData } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
+      params: { ids: coinId, vs_currencies: "brl" }
+    });
+    const preco = precoData[coinId]?.brl;
+    if (!preco) return res.status(400).json({ erro: "Criptomoeda não suportada" });
+
+    const quantidade = valor / preco;
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    if (!user || user.saldo < valor) return res.status(400).json({ erro: "Saldo insuficiente" });
+
+    const novoSaldo = user.saldo - valor;
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("cripto_investimentos").insert({
+      uid, ticker: ticker.toUpperCase(), nome: ticker.toUpperCase(), quantidade_cripto: quantidade,
+      preco_medio: preco, valor_investido: valor
+    });
+    await supabase.from("transactions").insert({ uid, tipo: "investimento_cripto", valor, status: "aprovado", categoria: ticker.toUpperCase() });
+    res.json({ ok: true, novo_saldo: novoSaldo, quantidade, preco });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao obter cotação" });
+  }
+});
+
+app.get("/cripto/carteira/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("cripto_investimentos").select("*").eq("uid", req.user.uid).eq("status", "ativo");
+  res.json(data || []);
+});
+
+app.post("/cripto/vender", authMiddleware, async (req, res) => {
+  const { investimento_id } = req.body;
+  const uid = req.user.uid;
+
+  const { data: inv } = await supabase.from("cripto_investimentos").select("*").eq("id", investimento_id).eq("uid", uid).single();
+  if (!inv) return res.status(400).json({ erro: "Investimento não encontrado" });
+
+  try {
+    const ids = { BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDT: "tether", LTC: "litecoin", DOGE: "dogecoin" };
+    const coinId = ids[inv.ticker] || inv.ticker.toLowerCase();
+
+    const { data: precoData } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
+      params: { ids: coinId, vs_currencies: "brl" }
+    });
+    const precoAtual = precoData[coinId]?.brl;
+    if (!precoAtual) return res.status(400).json({ erro: "Erro ao obter cotação" });
+
+    const valorVenda = precoAtual * inv.quantidade_cripto;
+    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    const novoSaldo = (user?.saldo ?? 0) + valorVenda;
+
+    await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
+    await supabase.from("cripto_investimentos").update({ status: "vendido" }).eq("id", investimento_id);
+    await supabase.from("transactions").insert({ uid, tipo: "venda_cripto", valor: valorVenda, status: "aprovado", categoria: inv.ticker });
+    res.json({ ok: true, valor_venda: valorVenda.toFixed(2) });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao processar venda" });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
