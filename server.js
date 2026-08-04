@@ -719,31 +719,69 @@ app.post("/coins/resgatar", authMiddleware, async (req, res) => {
   res.json({ ok: true, valor_creditado });
 });
 
-// ===== INDICADORES =====
 app.get("/indicadores", async (_, res) => {
   const ind = [];
-  try {
-    const { data: cotacoes } = await supabase.from("cotacoes").select("*");
-    const mapa = {};
-    cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
 
-    const ibov = mapa["IBOV"] || { preco: 128500, variacao: 0.82 };
-    ind.push({ nome: "IBOV", valor: ibov.preco.toLocaleString("pt-BR"), var: `${ibov.variacao >= 0 ? '+' : ''}${ibov.variacao.toFixed(2)}%`, positivo: ibov.variacao >= 0 });
-    const ifix = mapa["IFIX"] || { preco: 3150, variacao: 0.35 };
-    ind.push({ nome: "IFIX", valor: ifix.preco.toFixed(0), var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`, positivo: ifix.variacao >= 0 });
-    const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
-    ind.push({ nome: "Dólar", valor: `R$ ${usd.preco.toFixed(2)}`, var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`, positivo: usd.variacao >= 0 });
-  } catch (e) {}
+  // Buscar SELIC e CDI da Brapi (se key existir)
+  if (BRAPI_API_KEY) {
+    try {
+      const selicRes = await axios.get("https://brapi.dev/api/v2/prime-rate", {
+        params: { token: BRAPI_API_KEY }
+      });
+      const selic = selicRes.data?.prime_rate?.[0]?.value || 10.50;
+      ind.push({ nome: "SELIC", valor: `${selic.toFixed(2)}%`, var: "estável", positivo: true });
 
-  // sempre adiciona os fixos no final
-  ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
-  ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
-  ind.push({ nome: "IPCA", valor: "4,20%", var: "-0,10%", positivo: false });
-  if (ind.length < 4) {
-    ind.unshift({ nome: "IBOV", valor: "128.500", var: "+0,82%", positivo: true },
-                { nome: "IFIX", valor: "3.150", var: "+0,35%", positivo: true },
-                { nome: "Dólar", valor: "R$ 5,12", var: "-0,34%", positivo: false });
+      const cdi = selic - 0.10; // CDI geralmente é SELIC - 0,10%
+      ind.push({ nome: "CDI", valor: `${cdi.toFixed(2)}%`, var: "+0,02%", positivo: true });
+    } catch (e) {
+      console.warn("Erro ao buscar SELIC:", e.message);
+    }
   }
+
+  // Se não conseguiu SELIC, usa fallback
+  if (ind.length === 0) {
+    ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
+    ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
+  }
+
+  // IPCA (mensal – buscar do Banco Central)
+  try {
+    const ipcaRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.433/dados/ultimos/1?formato=json");
+    const ipca = ipcaRes.data?.[0]?.valor || "0,38";
+    ind.push({ nome: "IPCA", valor: `${ipca}%`, var: "-0,05%", positivo: false });
+  } catch (e) {
+    ind.push({ nome: "IPCA", valor: "0,38%", var: "-0,05%", positivo: false });
+  }
+
+  // IBOV, IFIX, Dólar (buscar da tabela cotacoes)
+  const { data: cotacoes } = await supabase.from("cotacoes").select("*");
+  const mapa = {};
+  if (cotacoes) cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
+
+  const ibov = mapa["IBOV"] || { preco: 128500, variacao: 0.82 };
+  ind.push({
+    nome: "IBOV",
+    valor: ibov.preco.toLocaleString("pt-BR"),
+    var: `${ibov.variacao >= 0 ? '+' : ''}${ibov.variacao.toFixed(2)}%`,
+    positivo: ibov.variacao >= 0
+  });
+
+  const ifix = mapa["IFIX"] || { preco: 3150, variacao: 0.35 };
+  ind.push({
+    nome: "IFIX",
+    valor: ifix.preco.toFixed(0),
+    var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`,
+    positivo: ifix.variacao >= 0
+  });
+
+  const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
+  ind.push({
+    nome: "Dólar",
+    valor: `R$ ${usd.preco.toFixed(2)}`,
+    var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`,
+    positivo: usd.variacao >= 0
+  });
+
   res.json(ind);
 });
 
