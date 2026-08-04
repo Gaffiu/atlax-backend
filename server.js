@@ -155,7 +155,7 @@ async function atualizarPrecosFundos() {
       } catch (e) {
         console.warn(`  ⚠️ Erro ao atualizar ${ticker}: ${e.message}`);
       }
-      await new Promise(r => setTimeout(r, 800)); // Pausa de 800ms entre chamadas
+      await new Promise(r => setTimeout(r, 800));
     }
   }
 
@@ -182,7 +182,30 @@ async function atualizarPrecosFundos() {
     }
   }
 
-  // 3. Criptos (sincronizar da tabela cotacoes para fundos)
+  // 3. BDRs via Brapi
+  if (BRAPI_API_KEY) {
+    const tickersBDRs = ["AAPL34", "TSLA34", "GOGL34", "AMZO34", "MSFT34"];
+    for (const ticker of tickersBDRs) {
+      try {
+        const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+          params: { token: BRAPI_API_KEY }
+        });
+        const result = data?.results?.[0];
+        if (result?.regularMarketPrice) {
+          await supabase.from("fundos").update({
+            preco: result.regularMarketPrice,
+            variacao: result.regularMarketChangePercent || 0
+          }).eq("ticker", ticker);
+          console.log(`  ✅ ${ticker}: R$ ${result.regularMarketPrice}`);
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ Erro ao atualizar ${ticker}: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+
+  // 4. Criptos (sincronizar da tabela cotacoes para fundos)
   const { data: cotacoes } = await supabase.from("cotacoes").select("*");
   if (cotacoes) {
     const mapa = {};
@@ -719,45 +742,94 @@ app.post("/coins/resgatar", authMiddleware, async (req, res) => {
   res.json({ ok: true, valor_creditado });
 });
 
+// ===== HISTÓRICO CDI (DADOS REAIS VIA BRAPI) =====
 app.get("/historico-cdi", async (_, res) => {
-  // Dados mensais do CDI (acumulado dos últimos 12 meses)
-  // Fonte: Banco Central (série 4389) ou Brapi
-  if (BRAPI_API_KEY) {
-    try {
-      // A Brapi não tem endpoint direto de CDI, vamos usar a SELIC como proxy
-      const response = await axios.get("https://brapi.dev/api/v2/prime-rate", {
-        params: { token: BRAPI_API_KEY, historical: true }
-      });
-      // Processar dados históricos...
-    } catch (e) {}
+  if (!BRAPI_API_KEY) {
+    return res.json({
+      labels: ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"],
+      data: [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57]
+    });
   }
 
-  // Fallback: dados sintéticos (baseados no CDI real de ~10,40% a.a.)
-  const labels = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  const data = [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57];
-  res.json({ labels, data });
+  try {
+    const response = await axios.get("https://brapi.dev/api/v2/prime-rate", {
+      params: {
+        token: BRAPI_API_KEY,
+        country: "brazil",
+        historical: true,
+        start: `${new Date().getFullYear() - 1}-01-01`,
+        end: `${new Date().getFullYear()}-12-31`
+      }
+    });
+
+    const rates = response.data?.prime_rate || [];
+    if (rates.length > 0) {
+      const sorted = rates.sort((a, b) => new Date(a.date) - new Date(b.date));
+      const ultimos12 = sorted.slice(-12);
+      let acumulado = 100;
+      const labels = [];
+      const data = [acumulado];
+
+      ultimos12.forEach((item, index) => {
+        if (index > 0) {
+          const taxa = item.value / 100;
+          acumulado = acumulado * (1 + taxa);
+          data.push(parseFloat(acumulado.toFixed(2)));
+        }
+        labels.push(new Date(item.date + "T00:00:00").toLocaleString("pt-BR", { month: "short" }));
+      });
+
+      return res.json({ labels, data });
+    }
+  } catch (e) {
+    console.warn("⚠️ Erro ao buscar histórico CDI:", e.message);
+  }
+
+  res.json({
+    labels: ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"],
+    data: [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57]
+  });
 });
 
+// ===== HISTÓRICO IBOVESPA (DADOS REAIS VIA BRAPI) =====
 app.get("/historico-ibov", async (_, res) => {
-  // Dados mensais do Ibovespa (últimos 12 meses)
-  // Fonte: Brapi ou Alpha Vantage
-  if (BRAPI_API_KEY) {
-    try {
-      const response = await axios.get("https://brapi.dev/api/quote/%5EBVSP", {
-        params: { token: BRAPI_API_KEY, range: "1y", interval: "1mo" }
-      });
-      // Processar...
-    } catch (e) {}
+  if (!BRAPI_API_KEY) {
+    return res.json({
+      labels: ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"],
+      data: [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500]
+    });
   }
 
-  // Fallback sintético
-  const labels = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  const data = [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500];
-  res.json({ labels, data });
+  try {
+    const response = await axios.get("https://brapi.dev/api/quote/%5EBVSP", {
+      params: {
+        token: BRAPI_API_KEY,
+        range: "1y",
+        interval: "1mo"
+      }
+    });
+
+    const results = response.data?.results?.[0];
+    if (results?.historicalDataPrice && results.historicalDataPrice.length > 0) {
+      const historico = results.historicalDataPrice.slice(-12);
+      const labels = historico.map(item => {
+        const data = new Date(item.date * 1000);
+        return data.toLocaleString("pt-BR", { month: "short" });
+      });
+      const data = historico.map(item => item.close);
+      return res.json({ labels, data });
+    }
+  } catch (e) {
+    console.warn("⚠️ Erro ao buscar histórico Ibovespa:", e.message);
+  }
+
+  res.json({
+    labels: ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"],
+    data: [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500]
+  });
 });
 
-
-
+// ===== INDICADORES =====
 app.get("/indicadores", async (_, res) => {
   const ind = [];
 
@@ -770,20 +842,19 @@ app.get("/indicadores", async (_, res) => {
       const selic = selicRes.data?.prime_rate?.[0]?.value || 10.50;
       ind.push({ nome: "SELIC", valor: `${selic.toFixed(2)}%`, var: "estável", positivo: true });
 
-      const cdi = selic - 0.10; // CDI geralmente é SELIC - 0,10%
+      const cdi = selic - 0.10;
       ind.push({ nome: "CDI", valor: `${cdi.toFixed(2)}%`, var: "+0,02%", positivo: true });
     } catch (e) {
       console.warn("Erro ao buscar SELIC:", e.message);
     }
   }
 
-  // Se não conseguiu SELIC, usa fallback
   if (ind.length === 0) {
     ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
     ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
   }
 
-  // IPCA (mensal – buscar do Banco Central)
+  // IPCA
   try {
     const ipcaRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.433/dados/ultimos/1?formato=json");
     const ipca = ipcaRes.data?.[0]?.valor || "0,38";
@@ -792,7 +863,7 @@ app.get("/indicadores", async (_, res) => {
     ind.push({ nome: "IPCA", valor: "0,38%", var: "-0,05%", positivo: false });
   }
 
-  // IBOV, IFIX, Dólar (buscar da tabela cotacoes)
+  // IBOV, IFIX, Dólar
   const { data: cotacoes } = await supabase.from("cotacoes").select("*");
   const mapa = {};
   if (cotacoes) cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
@@ -824,8 +895,8 @@ app.get("/indicadores", async (_, res) => {
   res.json(ind);
 });
 
+// ===== NOTÍCIAS =====
 app.get("/noticias", async (_, res) => {
-  // Tentar NewsAPI se configurada
   if (process.env.NEWS_API_KEY) {
     try {
       const response = await axios.get("https://newsapi.org/v2/top-headlines", {
@@ -846,7 +917,6 @@ app.get("/noticias", async (_, res) => {
     }
   }
 
-  // Fallback estático
   const noticias = [
     { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "O índice renovou máxima com fluxo estrangeiro positivo." },
     { titulo: "S&P 500 atinge novo recorde histórico impulsionado por tecnologia", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
@@ -856,10 +926,10 @@ app.get("/noticias", async (_, res) => {
   res.json(noticias);
 });
 
-// Executa ao iniciar o servidor
-atualizarPrecosFundos();
-
-// Executa a cada 2 horas (120 minutos * 60 segundos * 1000 milissegundos)
+// ===== INICIALIZAÇÃO =====
+// Aguarda 10s para garantir que as tabelas de cotacoes estejam populadas
+setTimeout(atualizarPrecosFundos, 10000);
+// Atualiza a cada 2 horas
 setInterval(atualizarPrecosFundos, 120 * 60 * 1000);
 
 const PORT = process.env.PORT || 5000;
