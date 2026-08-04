@@ -132,6 +132,86 @@ async function atualizarAcoesInternacionais() {
 atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais();
 setInterval(() => { atualizarCriptos(); atualizarAcoesBR(); atualizarAcoesInternacionais(); }, 120 * 60 * 1000);
 
+// ========== ATUALIZAR PREÇOS NA TABELA FUNDOS ==========
+async function atualizarPrecosFundos() {
+  console.log("📊 Atualizando preços dos fundos...");
+
+  // 1. Ações BR via Brapi
+  if (BRAPI_API_KEY) {
+    const tickersAcoes = ["PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "WEGE3", "MGLU3"];
+    for (const ticker of tickersAcoes) {
+      try {
+        const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+          params: { token: BRAPI_API_KEY }
+        });
+        const result = data?.results?.[0];
+        if (result?.regularMarketPrice) {
+          await supabase.from("fundos").update({
+            preco: result.regularMarketPrice,
+            variacao: result.regularMarketChangePercent || 0
+          }).eq("ticker", ticker);
+          console.log(`  ✅ ${ticker}: R$ ${result.regularMarketPrice}`);
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ Erro ao atualizar ${ticker}: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 800)); // Pausa de 800ms entre chamadas
+    }
+  }
+
+  // 2. ETFs via Brapi
+  if (BRAPI_API_KEY) {
+    const tickersETFs = ["BOVA11", "SMAL11", "IVVB11", "FIND11"];
+    for (const ticker of tickersETFs) {
+      try {
+        const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+          params: { token: BRAPI_API_KEY }
+        });
+        const result = data?.results?.[0];
+        if (result?.regularMarketPrice) {
+          await supabase.from("fundos").update({
+            preco: result.regularMarketPrice,
+            variacao: result.regularMarketChangePercent || 0
+          }).eq("ticker", ticker);
+          console.log(`  ✅ ${ticker}: R$ ${result.regularMarketPrice}`);
+        }
+      } catch (e) {
+        console.warn(`  ⚠️ Erro ao atualizar ${ticker}: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 800));
+    }
+  }
+
+  // 3. Criptos (sincronizar da tabela cotacoes para fundos)
+  const { data: cotacoes } = await supabase.from("cotacoes").select("*");
+  if (cotacoes) {
+    const mapa = {};
+    cotacoes.forEach(c => mapa[c.ticker] = { preco: c.preco, variacao: c.variacao });
+
+    if (mapa["BTC"]) {
+      await supabase.from("fundos").update({
+        preco: mapa["BTC"].preco,
+        variacao: mapa["BTC"].variacao
+      }).eq("ticker", "BTC");
+    }
+    if (mapa["ETH"]) {
+      await supabase.from("fundos").update({
+        preco: mapa["ETH"].preco,
+        variacao: mapa["ETH"].variacao
+      }).eq("ticker", "ETH");
+    }
+    if (mapa["SOL"]) {
+      await supabase.from("fundos").update({
+        preco: mapa["SOL"].preco,
+        variacao: mapa["SOL"].variacao
+      }).eq("ticker", "SOL");
+    }
+    console.log("  🪙 Criptos sincronizadas da tabela cotacoes");
+  }
+
+  console.log("📊 Preços dos fundos atualizados!");
+}
+
 // ===== ROTAS =====
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 
@@ -677,6 +757,12 @@ app.get("/noticias", async (_, res) => {
   ];
   res.json(noticias);
 });
+
+// Executa ao iniciar o servidor
+atualizarPrecosFundos();
+
+// Executa a cada 2 horas (120 minutos * 60 segundos * 1000 milissegundos)
+setInterval(atualizarPrecosFundos, 120 * 60 * 1000);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
