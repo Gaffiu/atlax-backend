@@ -11,6 +11,9 @@ const authMiddleware = require("./middleware/auth");
 
 const app = express();
 
+// Aumentar limite de listeners para evitar aviso com muitas requisições
+process.setMaxListeners(20);
+
 // Headers de segurança manuais (sem dependência helmet)
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
