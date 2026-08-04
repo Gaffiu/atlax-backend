@@ -785,13 +785,34 @@ app.get("/indicadores", async (_, res) => {
   res.json(ind);
 });
 
-// ===== NOTÍCIAS =====
 app.get("/noticias", async (_, res) => {
+  // Tentar NewsAPI se configurada
+  if (process.env.NEWS_API_KEY) {
+    try {
+      const response = await axios.get("https://newsapi.org/v2/top-headlines", {
+        params: {
+          country: "br",
+          category: "business",
+          apiKey: process.env.NEWS_API_KEY
+        }
+      });
+      const noticias = response.data.articles.slice(0, 5).map(a => ({
+        titulo: a.title,
+        fonte: a.source.name,
+        resumo: a.description || "Clique para ler mais"
+      }));
+      if (noticias.length > 0) return res.json(noticias);
+    } catch (e) {
+      console.warn("Erro ao buscar notícias:", e.message);
+    }
+  }
+
+  // Fallback estático
   const noticias = [
-    { titulo: "Ibovespa fecha em alta", fonte: "InfoMoney", resumo: "Índice renova máxima com fluxo estrangeiro positivo." },
-    { titulo: "S&P 500 atinge recorde", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
-    { titulo: "Dólar recua", fonte: "Reuters", resumo: "Moeda americana acumula queda de 1,2% na semana." },
-    { titulo: "Petrobras distribui dividendos", fonte: "Exame", resumo: "Estatal pagará R$ 15 bilhões aos acionistas." }
+    { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "O índice renovou máxima com fluxo estrangeiro positivo." },
+    { titulo: "S&P 500 atinge novo recorde histórico impulsionado por tecnologia", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos com balanços acima do esperado." },
+    { titulo: "Dólar recua com entrada de capital e melhora do cenário fiscal", fonte: "Reuters", resumo: "Moeda americana acumula queda de 1,2% na semana." },
+    { titulo: "Petrobras anuncia pagamento de dividendos bilionários", fonte: "Exame", resumo: "Estatal distribuirá R$ 15 bilhões aos acionistas." }
   ];
   res.json(noticias);
 });
