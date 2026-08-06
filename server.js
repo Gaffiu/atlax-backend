@@ -1489,5 +1489,82 @@ setInterval(executarOrdensAutomaticas, 5 * 60 * 1000);
 // Primeira execução após 30 segundos do startup
 setTimeout(executarOrdensAutomaticas, 30000);
 
+// ===== TRADE – COTAÇÃO UNIFICADA =====
+app.get("/trade/cotacao/:ticker", async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  
+  // Tentar Brapi para ações/ETFs/BDRs
+  if (BRAPI_API_KEY) {
+    try {
+      const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
+      const result = data?.results?.[0];
+      if (result?.regularMarketPrice) {
+        return res.json({
+          preco: result.regularMarketPrice,
+          variacao: result.regularMarketChangePercent || 0,
+          high: result.regularMarketDayHigh || 0,
+          low: result.regularMarketDayLow || 0,
+          volume: result.regularMarketVolume || 0
+        });
+      }
+    } catch (e) {}
+  }
+
+  // Fallback: CoinGecko para criptos
+  const ids = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana", USDT:"tether", LTC:"litecoin", DOGE:"dogecoin" };
+  const coinId = ids[ticker] || ticker.toLowerCase();
+  try {
+    const [priceRes, marketRes] = await Promise.all([
+      axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: coinId, vs_currencies: "brl", include_24hr_change: "true" } }),
+      axios.get("https://api.coingecko.com/api/v3/coins/markets", { params: { vs_currency: "brl", ids: coinId, per_page: 1 } })
+    ]);
+    const preco = priceRes.data[coinId]?.brl || 0;
+    const variacao = priceRes.data[coinId]?.brl_24h_change || 0;
+    const m = marketRes.data[0] || {};
+    return res.json({ preco, variacao, high: m.high_24h || 0, low: m.low_24h || 0, volume: m.total_volume || 0 });
+  } catch (e) {}
+
+  res.json({ preco: 0, variacao: 0, high: 0, low: 0, volume: 0 });
+});
+
+// ===== TRADE – HISTÓRICO OHLC UNIFICADO =====
+app.get("/trade/historico/:ticker", async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const range = parseInt(req.query.range) || 365;
+  const interval = req.query.interval || "1d";
+
+  // Tentar Brapi para ações/ETFs/BDRs
+  if (BRAPI_API_KEY) {
+    try {
+      const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+        params: { token: BRAPI_API_KEY, range: `${Math.floor(range/30)}mo`, interval: "1d" }
+      });
+      const result = data?.results?.[0];
+      if (result?.historicalDataPrice) {
+        const ohlc = result.historicalDataPrice.map(item => [
+          item.date * 1000,
+          item.open,
+          item.high,
+          item.low,
+          item.close
+        ]);
+        return res.json(ohlc);
+      }
+    } catch (e) {}
+  }
+
+  // Fallback: CoinGecko para criptos
+  const ids = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana" };
+  const coinId = ids[ticker] || ticker.toLowerCase();
+  try {
+    const { data } = await axios.get(`https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`, {
+      params: { vs_currency: "brl", days: Math.min(range, 365) }
+    });
+    return res.json(data || []);
+  } catch (e) {}
+
+  res.json([]);
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
