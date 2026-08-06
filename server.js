@@ -1511,7 +1511,39 @@ app.get("/trade/cotacao/:ticker", async (req, res) => {
   }
 
   // Fallback: CoinGecko para criptos
-  const ids = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana", USDT:"tether", LTC:"litecoin", DOGE:"dogecoin" };
+  const ids = {
+  BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDT: "tether",
+  LTC: "litecoin", DOGE: "dogecoin", XRP: "ripple", ADA: "cardano",
+  BNB: "binancecoin", DOT: "polkadot", MATIC: "matic-network",
+  TRX: "tron", AVAX: "avalanche-2", LINK: "chainlink",
+  UNI: "uniswap", ATOM: "cosmos", ETC: "ethereum-classic",
+  FIL: "filecoin", VET: "vechain", ALGO: "algorand",
+  ICP: "internet-computer", NEAR: "near", FTM: "fantom",
+  SAND: "the-sandbox", MANA: "decentraland", AXS: "axie-infinity",
+  THETA: "theta-token", HNT: "helium", FLOW: "flow",
+  EGLD: "elrond-erd-2", KLAY: "klay-token", CAKE: "pancakeswap-token",
+  BCH: "bitcoin-cash", XLM: "stellar", XMR: "monero",
+  EOS: "eos", BSV: "bitcoin-sv", ZEC: "zcash",
+  DASH: "dash", NEO: "neo", QTUM: "qtum",
+  IOTA: "iota", OMG: "omisego", ZIL: "zilliqa",
+  BAT: "basic-attention-token", ZRX: "0x", ENJ: "enjincoin",
+  COMP: "compound-governance-token", SNX: "synthetix-network-token",
+  SUSHI: "sushi", GRT: "the-graph", CELO: "celo",
+  LUNA: "terra-luna-2", LUNC: "terra-luna-classic",
+  APT: "aptos", SUI: "sui", ARB: "arbitrum",
+  OP: "optimism", PEPE: "pepe", SHIB: "shiba-inu",
+  WBTC: "wrapped-bitcoin", CRO: "crypto-com-chain",
+  INJ: "injective-protocol", TIA: "celestia",
+  SEI: "sei-network", STRK: "starknet",
+  // Moedas meme adicionais
+  BONK: "bonk", WIF: "dogwifcoin", FLOKI: "floki",
+  // Stablecoins
+  USDC: "usd-coin", DAI: "dai", BUSD: "binance-usd",
+  // Outras
+  RUNE: "thorchain", LDO: "lido-dao", RNDR: "render-token",
+  FET: "fetch-ai", AGIX: "singularitynet", OCEAN: "ocean-protocol",
+  JUP: "jupiter-exchange-solana", PYTH: "pyth-network"
+};
   const coinId = ids[ticker] || ticker.toLowerCase();
   try {
     const [priceRes, marketRes] = await Promise.all([
@@ -1554,7 +1586,39 @@ app.get("/trade/historico/:ticker", async (req, res) => {
   }
 
   // Fallback: CoinGecko para criptos
-  const ids = { BTC:"bitcoin", ETH:"ethereum", SOL:"solana" };
+  const ids = {
+  BTC: "bitcoin", ETH: "ethereum", SOL: "solana", USDT: "tether",
+  LTC: "litecoin", DOGE: "dogecoin", XRP: "ripple", ADA: "cardano",
+  BNB: "binancecoin", DOT: "polkadot", MATIC: "matic-network",
+  TRX: "tron", AVAX: "avalanche-2", LINK: "chainlink",
+  UNI: "uniswap", ATOM: "cosmos", ETC: "ethereum-classic",
+  FIL: "filecoin", VET: "vechain", ALGO: "algorand",
+  ICP: "internet-computer", NEAR: "near", FTM: "fantom",
+  SAND: "the-sandbox", MANA: "decentraland", AXS: "axie-infinity",
+  THETA: "theta-token", HNT: "helium", FLOW: "flow",
+  EGLD: "elrond-erd-2", KLAY: "klay-token", CAKE: "pancakeswap-token",
+  BCH: "bitcoin-cash", XLM: "stellar", XMR: "monero",
+  EOS: "eos", BSV: "bitcoin-sv", ZEC: "zcash",
+  DASH: "dash", NEO: "neo", QTUM: "qtum",
+  IOTA: "iota", OMG: "omisego", ZIL: "zilliqa",
+  BAT: "basic-attention-token", ZRX: "0x", ENJ: "enjincoin",
+  COMP: "compound-governance-token", SNX: "synthetix-network-token",
+  SUSHI: "sushi", GRT: "the-graph", CELO: "celo",
+  LUNA: "terra-luna-2", LUNC: "terra-luna-classic",
+  APT: "aptos", SUI: "sui", ARB: "arbitrum",
+  OP: "optimism", PEPE: "pepe", SHIB: "shiba-inu",
+  WBTC: "wrapped-bitcoin", CRO: "crypto-com-chain",
+  INJ: "injective-protocol", TIA: "celestia",
+  SEI: "sei-network", STRK: "starknet",
+  // Moedas meme adicionais
+  BONK: "bonk", WIF: "dogwifcoin", FLOKI: "floki",
+  // Stablecoins
+  USDC: "usd-coin", DAI: "dai", BUSD: "binance-usd",
+  // Outras
+  RUNE: "thorchain", LDO: "lido-dao", RNDR: "render-token",
+  FET: "fetch-ai", AGIX: "singularitynet", OCEAN: "ocean-protocol",
+  JUP: "jupiter-exchange-solana", PYTH: "pyth-network"
+};
   const coinId = ids[ticker] || ticker.toLowerCase();
   try {
     const { data } = await axios.get(`https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`, {
