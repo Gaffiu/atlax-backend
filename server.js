@@ -849,23 +849,19 @@ app.get("/historico-ibov", async (_, res) => {
 app.get("/indicadores", async (_, res) => {
   const ind = [];
 
-  // Buscar SELIC e CDI da Brapi (se key existir)
-  if (BRAPI_API_KEY) {
-    try {
-      const selicRes = await axios.get("https://brapi.dev/api/v2/prime-rate", {
-        params: { token: BRAPI_API_KEY }
-      });
-      const selic = selicRes.data?.prime_rate?.[0]?.value || 10.50;
-      ind.push({ nome: "SELIC", valor: `${selic.toFixed(2)}%`, var: "estável", positivo: true });
-
-      const cdi = selic - 0.10;
-      ind.push({ nome: "CDI", valor: `${cdi.toFixed(2)}%`, var: "+0,02%", positivo: true });
-    } catch (e) {
-      console.warn("Erro ao buscar SELIC:", e.message);
+ // Buscar SELIC e CDI da API pública do Banco Central (gratuita e sem limite)
+  try {
+    const selicRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados/ultimos/1?formato=json");
+    const selic = selicRes.data?.[0]?.valor;
+    if (selic) {
+      const selicValor = parseFloat(selic.replace(",", "."));
+      ind.push({ nome: "SELIC", valor: `${selicValor.toFixed(2)}%`, var: "estável", positivo: true });
+      ind.push({ nome: "CDI", valor: `${(selicValor - 0.10).toFixed(2)}%`, var: "+0,02%", positivo: true });
+    } else {
+      throw new Error("Valor não encontrado");
     }
-  }
-
-  if (ind.length === 0) {
+  } catch (e) {
+    console.warn("Erro ao buscar SELIC do BC, usando fallback:", e.message);
     ind.push({ nome: "SELIC", valor: "10,50%", var: "estável", positivo: true });
     ind.push({ nome: "CDI", valor: "10,40%", var: "+0,02%", positivo: true });
   }
