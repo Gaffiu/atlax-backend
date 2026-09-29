@@ -1,6 +1,7 @@
 console.log("🔥 Iniciando servidor...");
 process.on("uncaughtException", (err) => console.error("💥 Erro:", err));
 process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
+process.setMaxListeners(50);
 
 const express = require("express");
 const axios = require("axios");
