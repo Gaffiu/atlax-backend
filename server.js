@@ -1048,8 +1048,6 @@ setTimeout(atualizarPrecosFundos, 10000);
 // Atualiza preços a cada 30 minutos
 setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
 
-// Atualiza rentabilidades 12m uma vez por dia (a cada 24h)
-setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
 
 // ===== TAXAS RENDA FIXA (DINÂMICAS BASEADAS NA SELIC/CDI) =====
 app.get("/taxas-renda-fixa", async (_, res) => {
