@@ -1,7 +1,6 @@
 console.log("🔥 Iniciando servidor...");
 process.on("uncaughtException", (err) => console.error("💥 Erro:", err));
 process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
-process.setMaxListeners(50);
 
 const express = require("express");
 const axios = require("axios");
@@ -13,7 +12,7 @@ const authMiddleware = require("./middleware/auth");
 const app = express();
 
 // Aumentar limite de listeners para evitar aviso com muitas requisições
-process.setMaxListeners(20);
+process.setMaxListeners(50);
 
 // Headers de segurança manuais (sem dependência helmet)
 app.use((req, res, next) => {
