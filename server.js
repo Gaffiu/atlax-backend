@@ -1042,14 +1042,13 @@ async function atualizarRentabilidades() {
 // Executa atualizações 10s após iniciar
 setTimeout(() => {
   atualizarPrecosFundos();
-  atualizarRentabilidades(); // Calcula rentabilidades 12m na inicialização
-}, 10000);
+setTimeout(atualizarPrecosFundos, 10000);
 
 // Atualiza preços a cada 30 minutos
 setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
 
 // Atualiza rentabilidades 12m uma vez por dia (a cada 24h)
-setInterval(atualizarRentabilidades, 24 * 60 * 60 * 1000);
+setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
 
 // ===== TAXAS RENDA FIXA (DINÂMICAS BASEADAS NA SELIC/CDI) =====
 app.get("/taxas-renda-fixa", async (_, res) => {
