@@ -78,7 +78,7 @@ const {
 const TAXA_DEPOSITO = 0.05;
 const TAXA_SAQUE = 0.05;
 const TAXA_TRADE = 0.003;
-const SAQUE_MINIMO = 30;
+const SAQUE_MINIMO = 100;
 
 const BONUS_MINIMO = 20;
 const BONUS_MAXIMO = 200;
