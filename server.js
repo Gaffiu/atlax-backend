@@ -80,6 +80,28 @@ const TAXA_DEPOSITO = 0.10;
 const TAXA_SAQUE = 0.10;
 const SAQUE_MINIMO = 100;
 
+// ========== CACHE EM MEMÓRIA ==========
+const cache = new Map();
+
+function getCache(key) {
+  const item = cache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expira) { cache.delete(key); return null; }
+  return item.valor;
+}
+
+function setCache(key, valor, ttlSegundos = 300) {
+  cache.set(key, { valor, expira: Date.now() + ttlSegundos * 1000 });
+}
+
+// Limpa cache a cada 10 minutos (evita vazamento de memória)
+setInterval(() => {
+  const agora = Date.now();
+  for (const [key, item] of cache.entries()) {
+    if (agora > item.expira) cache.delete(key);
+  }
+}, 10 * 60 * 1000);
+
 // Mercado Pago
 let payment = null;
 if (MP_TOKEN) {
