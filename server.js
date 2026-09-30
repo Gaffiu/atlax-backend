@@ -1268,8 +1268,8 @@ app.get("/noticias", async (_, res) => {
     noticias = [
       { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "Índice renovou máxima com fluxo estrangeiro positivo." },
       { titulo: "S&P 500 atinge novo recorde histórico", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos." },
-      { titulo: "Dólar recua com entrada de capital", fonte: "
-        { titulo: "Petrobras anuncia dividendos bilionários", fonte: "Exame", resumo: "R$ 15 bilhões aos acionistas." }
+      { titulo: "Dólar recua com entrada de capital", fonte: "Reuters", resumo: "Moeda americana acumula queda." },
+      { titulo: "Petrobras anuncia dividendos bilionários", fonte: "Exame", resumo: "R$ 15 bilhões aos acionistas." }
     ];
   }
   setCache("noticias", noticias, 600);
