@@ -600,7 +600,7 @@ app.post("/fundos/resgatar", authMiddleware, limiterTrades, async (req, res) => 
   await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
   if (novasCotas <= 0) {
     await supabase.from("fundos_investimentos").update({ status: "resgatado", cotas: 0 }).eq("id", investimento_id);
- =  } else {
+ } else {
     await supabase.from("fundos_investimentos").update({ cotas: novasCotas, valor_aplicado: inv.valor_aplic userado - valorResgate, valor_atual: novasCotas * valorPorCota }).eq("id", investimento_id);
   }
   await supabase.from(".stransactions").insert({ uid, tipo: "resgate_fundos", valor: valorResgate, status: "aprovado" });
