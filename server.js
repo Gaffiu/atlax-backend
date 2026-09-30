@@ -74,9 +74,17 @@ const {
   GEMINI_API_KEY
 } = process.env;
 
-const TAXA_DEPOSITO = 0.10;
-const TAXA_SAQUE = 0.10;
-const SAQUE_MINIMO = 100;
+// ========== TAXAS E CONFIGURAÇÕES (SPRINT 6) ==========
+const TAXA_DEPOSITO = 0.05;
+const TAXA_SAQUE = 0.05;
+const TAXA_TRADE = 0.003;
+const SAQUE_MINIMO = 30;
+
+const BONUS_MINIMO = 20;
+const BONUS_MAXIMO = 200;
+const BONUS_MULTIPLICADOR = 2;      // 2x o valor depositado
+const ROLLOVER_MULTIPLICADOR = 5;   // 5x o bônus em volume de trade
+
 const VERSAO_TERMOS = "v1.0";
 
 const cache = new Map();
@@ -142,6 +150,80 @@ async function verificarCompliance(uid, exigirKYC = false) {
   if (!user.suitability_feito) return { ok: false, erro: "Você precisa preencher o questionário de perfil de investidor" };
   if (exigirKYC && !user.kyc_aprovado) return { ok: false, erro: "Você precisa completar a verificação de identidade (KYC) antes de sacar" };
   return { ok: true };
+}
+
+// ========== PROCESSAR BÔNUS NO PRIMEIRO DEPÓSITO ==========
+async function processarBonusPrimeiroDeposito(uid, valorDepositoLiquido) {
+  try {
+    const { data: user } = await supabase.from("usuarios")
+      .select("bonus_recebido")
+      .eq("id", uid).single();
+    if (user?.bonus_recebido) return { aplicado: false };
+
+    let valorBonus = valorDepositoLiquido * BONUS_MULTIPLICADOR;
+    if (valorBonus < BONUS_MINIMO) valorBonus = BONUS_MINIMO;
+    if (valorBonus > BONUS_MAXIMO) valorBonus = BONUS_MAXIMO;
+
+    const rolloverMeta = valorBonus * ROLLOVER_MULTIPLICADOR;
+
+    await supabase.from("usuarios").update({
+      bonus_bloqueado: valorBonus,
+      rollover_meta: rolloverMeta,
+      rollover_progresso: 0,
+      bonus_recebido: true
+    }).eq("id", uid);
+
+    await supabase.from("bonus_historico").insert({
+      uid,
+      valor_bonus: valorBonus,
+      rollover_meta: rolloverMeta,
+      status: "bloqueado"
+    });
+
+    console.log(`🎁 Bônus aplicado: ${uid} | R$ ${valorBonus} | rollover R$ ${rolloverMeta}`);
+    return { aplicado: true, valorBonus, rolloverMeta };
+  } catch (e) {
+    console.error("Erro ao processar bônus:", e.message);
+    return { aplicado: false };
+  }
+}
+
+// ========== REGISTRAR VOLUME DE TRADE (PARA ROLLOVER) ==========
+async function registrarVolumeTrade(uid, valorOperacao) {
+  try {
+    const { data: user } = await supabase.from("usuarios")
+      .select("bonus_bloqueado, rollover_meta, rollover_progresso")
+      .eq("id", uid).single();
+    if (!user) return;
+    if (Number(user.bonus_bloqueado) <= 0) return;
+
+    const novoProgresso = Number(user.rollover_progresso || 0) + Number(valorOperacao);
+    const meta = Number(user.rollover_meta || 0);
+
+    if (novoProgresso >= meta) {
+      // Rollover atingido: libera o bônus
+      const { data: userAtual } = await supabase.from("usuarios")
+        .select("saldo, bonus_bloqueado").eq("id", uid).single();
+      const novoSaldo = Number(userAtual.saldo || 0) + Number(userAtual.bonus_bloqueado);
+      await supabase.from("usuarios").update({
+        saldo: novoSaldo,
+        bonus_bloqueado: 0,
+        bonus_liberado: userAtual.bonus_bloqueado,
+        rollover_progresso: novoProgresso
+      }).eq("id", uid);
+      await supabase.from("bonus_historico").update({
+        status: "liberado",
+        liberado_em: new Date()
+      }).eq("uid", uid).eq("status", "bloqueado");
+      console.log(`✅ Rollover completo! Bônus liberado para ${uid}`);
+    } else {
+      await supabase.from("usuarios").update({
+        rollover_progresso: novoProgresso
+      }).eq("id", uid);
+    }
+  } catch (e) {
+    console.error("Erro rollover:", e.message);
+  }
 }
 
 let payment = null;
@@ -263,9 +345,9 @@ async function atualizarPrecosFundos() {
             preco: r.regularMarketPrice,
             variacao: r.regularMarketChangePercent || 0
           }).eq("ticker", r.symbol);
-          console.log(`  ✅ ${r.symbol}: R$ ${r.regularMarketPrice}`);
         }
       }
+      console.log(`  ✅ ${results.length} tickers atualizados`);
     } catch (e) {
       console.warn(`  ⚠️ Erro batch Brapi: ${e.message}`);
     }
@@ -339,7 +421,6 @@ app.post("/compliance/kyc", authMiddleware, async (req, res) => {
     await supabase.from("usuarios").update({ kyc_aprovado: true }).eq("id", uid);
     res.json({ ok: true, mensagem: "KYC aprovado com sucesso" });
   } catch (e) {
-    console.error("Erro KYC:", e.message);
     res.status(500).json({ erro: "Erro ao processar KYC" });
   }
 });
@@ -392,7 +473,6 @@ app.post("/compliance/suitability", authMiddleware, async (req, res) => {
     if (!Array.isArray(respostas) || respostas.length !== PERGUNTAS_SUITABILITY.length) {
       return res.status(400).json({ erro: "Responda todas as perguntas" });
     }
-
     let pontuacao = 0;
     const detalhes = {};
     for (const pergunta of PERGUNTAS_SUITABILITY) {
@@ -403,7 +483,6 @@ app.post("/compliance/suitability", authMiddleware, async (req, res) => {
       pontuacao += pergunta.respostas[idx].p;
       detalhes[pergunta.id] = pergunta.respostas[idx].t;
     }
-
     let perfil = "conservador";
     if (pontuacao >= 10) perfil = "arrojado";
     else if (pontuacao >= 5) perfil = "moderado";
@@ -411,7 +490,6 @@ app.post("/compliance/suitability", authMiddleware, async (req, res) => {
     await supabase.from("suitability").upsert({
       uid, perfil, pontuacao, respostas: detalhes, preenchido_em: new Date()
     }, { onConflict: "uid" });
-
     await supabase.from("usuarios").update({ suitability_feito: true }).eq("id", uid);
     res.json({ ok: true, perfil, pontuacao });
   } catch (e) {
@@ -424,7 +502,7 @@ app.get("/compliance/suitability", authMiddleware, async (req, res) => {
   res.json(data || {});
 });
 
-// ========== SUPORTE (SAC/OUVIDORIA) ==========
+// ========== SUPORTE ==========
 app.post("/suporte/criar", authMiddleware, limiterTrades, async (req, res) => {
   const { tipo, assunto, mensagem } = req.body;
   if (!["duvida", "reclamacao", "sugestao", "ouvidoria"].includes(tipo)) {
@@ -447,7 +525,25 @@ app.get("/suporte/lista/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
-// ========== ROTAS ==========
+// ========== BÔNUS ==========
+app.get("/bonus/status", authMiddleware, async (req, res) => {
+  const { data: user } = await supabase.from("usuarios")
+    .select("bonus_bloqueado, bonus_liberado, rollover_meta, rollover_progresso, bonus_recebido, saldo")
+    .eq("id", req.user.uid).single();
+  res.json({
+    saldo_real: Number(user?.saldo || 0),
+    bonus_bloqueado: Number(user?.bonus_bloqueado || 0),
+    bonus_liberado: Number(user?.bonus_liberado || 0),
+    rollover_meta: Number(user?.rollover_meta || 0),
+    rollover_progresso: Number(user?.rollover_progresso || 0),
+    rollover_percentual: user?.rollover_meta > 0
+      ? Math.min(100, (Number(user.rollover_progresso) / Number(user.rollover_meta)) * 100)
+      : 0,
+    bonus_recebido: user?.bonus_recebido || false
+  });
+});
+
+// ========== ROTAS PRINCIPAIS ==========
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 app.get("/health", (_, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
 
@@ -464,8 +560,16 @@ app.get("/cotacoes", async (_, res) => {
 });
 
 app.get("/saldo/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("usuarios").select("saldo").eq("id", req.user.uid).single();
-  res.json({ saldo: data?.saldo ?? 0 });
+  const { data } = await supabase.from("usuarios")
+    .select("saldo, bonus_bloqueado, bonus_liberado, rollover_meta, rollover_progresso")
+    .eq("id", req.user.uid).single();
+  res.json({
+    saldo: data?.saldo ?? 0,
+    bonus_bloqueado: data?.bonus_bloqueado ?? 0,
+    bonus_liberado: data?.bonus_liberado ?? 0,
+    rollover_meta: data?.rollover_meta ?? 0,
+    rollover_progresso: data?.rollover_progresso ?? 0
+  });
 });
 
 app.get("/extrato/:uid", authMiddleware, async (req, res) => {
@@ -512,6 +616,16 @@ app.put("/perfil/:uid", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/email/verificado", authMiddleware, async (req, res) => {
+  try {
+    await supabase.from("usuarios").update({ email_verificado: true }).eq("id", req.user.uid);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao marcar email" });
+  }
+});
+
+// ========== DEPÓSITO PIX (COM BÔNUS) ==========
 app.post("/deposito", authMiddleware, limiterTrades, async (req, res) => {
   try {
     const comp = await verificarCompliance(req.user.uid);
@@ -554,6 +668,8 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
           { uid, tipo: "deposito", valor: Number(valorLiquido), status: "aprovado" },
           { uid: "admin", tipo: "taxa_deposito", valor: Number(taxa), status: "aprovado", categoria: "taxa" }
         ]);
+        // 🎁 Aplicar bônus se for o primeiro depósito
+        await processarBonusPrimeiroDeposito(uid, valorLiquido);
         saldoAtualizado = novoSaldo;
       }
     }
@@ -563,6 +679,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
   }
 });
 
+// ========== SAQUE ==========
 app.post("/saque", authMiddleware, limiterTrades, async (req, res) => {
   try {
     const comp = await verificarCompliance(req.user.uid, true);
@@ -578,9 +695,11 @@ app.post("/saque", authMiddleware, limiterTrades, async (req, res) => {
     }
     const taxa = valorSaque * TAXA_SAQUE;
     const valorTotal = valorSaque + taxa;
-    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
+    const { data: user } = await supabase.from("usuarios").select("saldo, bonus_bloqueado").eq("id", uid).single();
     if (!user || user.saldo < valorTotal) {
-      return res.status(400).json({ erro: "Saldo insuficiente" });
+      return res.status(400).json({
+        erro: `Saldo real insuficiente. Você tem R$ ${Number(user?.saldo || 0).toFixed(2)} disponível. Seu bônus de R$ ${Number(user?.bonus_bloqueado || 0).toFixed(2)} só é liberado após completar o rollover.`
+      });
     }
     const novoSaldo = user.saldo - valorTotal;
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
@@ -594,6 +713,7 @@ app.post("/saque", authMiddleware, limiterTrades, async (req, res) => {
   }
 });
 
+// ========== INVESTIR (genérico) ==========
 app.post("/investir", authMiddleware, limiterTrades, async (req, res) => {
   try {
     const comp = await verificarCompliance(req.user.uid);
@@ -606,12 +726,14 @@ app.post("/investir", authMiddleware, limiterTrades, async (req, res) => {
     });
     if (error) return res.status(500).json({ erro: "Erro no servidor" });
     if (data?.erro) return res.status(400).json({ erro: data.erro });
+    await registrarVolumeTrade(uid, Number(valor));
     res.json({ ok: true, novo_saldo: data.novo_saldo });
   } catch (err) {
     res.status(500).json({ erro: "Erro interno" });
   }
 });
 
+// ========== DEPÓSITO CRIPTO ==========
 app.post("/deposito-cripto", authMiddleware, limiterTrades, async (req, res) => {
   try {
     const comp = await verificarCompliance(req.user.uid);
@@ -665,12 +787,14 @@ app.post("/webhook/nowpayments", async (req, res) => {
     const novoSaldo = (userAtual?.saldo ?? 0) + Number(valorReais);
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("transactions").insert({ uid, tipo: "deposito_cripto", valor: Number(valorReais), status: "aprovado", categoria: deposito.currency });
+    await processarBonusPrimeiroDeposito(uid, valorReais);
     res.status(200).send("OK");
   } catch (err) {
     res.status(500).json({ erro: "Erro interno" });
   }
 });
 
+// ========== FUNDOS ==========
 app.get("/fundos", async (_, res) => {
   const cached = getCache("fundos");
   if (cached) return res.json(cached);
@@ -696,6 +820,7 @@ app.get("/carteira/:uid", authMiddleware, async (req, res) => {
   res.json(data || []);
 });
 
+// ========== RENDA FIXA ==========
 app.post("/renda-fixa/aplicar", authMiddleware, limiterTrades, async (req, res) => {
   const comp = await verificarCompliance(req.user.uid);
   if (!comp.ok) return res.status(403).json({ erro: comp.erro });
@@ -714,6 +839,7 @@ app.post("/renda-fixa/aplicar", authMiddleware, limiterTrades, async (req, res) 
     data_vencimento: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
   });
   await supabase.from("transactions").insert({ uid, tipo: "investimento_rf", valor, status: "aprovado", categoria: ticker });
+  await registrarVolumeTrade(uid, Number(valor));
   res.json({ ok: true, novo_saldo: novoSaldo });
 });
 
@@ -740,6 +866,7 @@ app.post("/renda-fixa/resgatar", authMiddleware, limiterTrades, async (req, res)
   res.json({ ok: true, valor_resgate: valorAtual.toFixed(2) });
 });
 
+// ========== RENDA VARIÁVEL ==========
 app.post("/renda-variavel/comprar", authMiddleware, limiterTrades, async (req, res) => {
   const comp = await verificarCompliance(req.user.uid);
   if (!comp.ok) return res.status(403).json({ erro: comp.erro });
@@ -758,6 +885,7 @@ app.post("/renda-variavel/comprar", authMiddleware, limiterTrades, async (req, r
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("renda_variavel_investimentos").insert({ uid, ticker, nome: ticker, quantidade, preco_medio: preco, valor_investido: valor });
     await supabase.from("transactions").insert({ uid, tipo: "investimento_rv", valor, status: "aprovado", categoria: ticker });
+    await registrarVolumeTrade(uid, Number(valor));
     res.json({ ok: true, novo_saldo: novoSaldo, quantidade, preco });
   } catch (e) {
     res.status(500).json({ erro: "Erro ao obter cotação" });
@@ -785,12 +913,14 @@ app.post("/renda-variavel/vender", authMiddleware, limiterTrades, async (req, re
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("renda_variavel_investimentos").update({ status: "vendido" }).eq("id", investimento_id);
     await supabase.from("transactions").insert({ uid, tipo: "venda_rv", valor: valorVenda, status: "aprovado", categoria: inv.ticker });
+    await registrarVolumeTrade(uid, Number(valorVenda));
     res.json({ ok: true, valor_venda: valorVenda.toFixed(2) });
   } catch (e) {
     res.status(500).json({ erro: "Erro ao processar venda" });
   }
 });
 
+// ========== FUNDOS (aplicar/resgatar) ==========
 app.post("/fundos/aplicar", authMiddleware, limiterTrades, async (req, res) => {
   const comp = await verificarCompliance(req.user.uid);
   if (!comp.ok) return res.status(403).json({ erro: comp.erro });
@@ -806,6 +936,7 @@ app.post("/fundos/aplicar", authMiddleware, limiterTrades, async (req, res) => {
   await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
   await supabase.from("fundos_investimentos").insert({ uid, fundo_id, cotas, valor_aplicado: valor, valor_atual: valor, rentabilidade: 0, status: "ativo" });
   await supabase.from("transactions").insert({ uid, tipo: "investimento_fundos", valor, status: "aprovado", categoria: fundo.nome });
+  await registrarVolumeTrade(uid, Number(valor));
   res.json({ ok: true, novo_saldo: novoSaldo });
 });
 
@@ -841,6 +972,7 @@ app.post("/fundos/resgatar", authMiddleware, limiterTrades, async (req, res) => 
   res.json({ ok: true, valor_resgate: valorResgate.toFixed(2) });
 });
 
+// ========== CRIPTO ==========
 app.post("/cripto/comprar", authMiddleware, limiterTrades, async (req, res) => {
   const comp = await verificarCompliance(req.user.uid);
   if (!comp.ok) return res.status(403).json({ erro: comp.erro });
@@ -866,6 +998,7 @@ app.post("/cripto/comprar", authMiddleware, limiterTrades, async (req, res) => {
       valor_investido: valor
     });
     await supabase.from("transactions").insert({ uid, tipo: "investimento_cripto", valor, status: "aprovado", categoria: ticker.toUpperCase() });
+    await registrarVolumeTrade(uid, Number(valor));
     res.json({ ok: true, novo_saldo: novoSaldo, quantidade, preco });
   } catch (e) {
     res.status(500).json({ erro: "Erro ao obter cotação" });
@@ -893,12 +1026,14 @@ app.post("/cripto/vender", authMiddleware, limiterTrades, async (req, res) => {
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("cripto_investimentos").update({ status: "vendido" }).eq("id", investimento_id);
     await supabase.from("transactions").insert({ uid, tipo: "venda_cripto", valor: valorVenda, status: "aprovado", categoria: inv.ticker });
+    await registrarVolumeTrade(uid, Number(valorVenda));
     res.json({ ok: true, valor_venda: valorVenda.toFixed(2) });
   } catch (e) {
     res.status(500).json({ erro: "Erro ao processar venda" });
   }
 });
 
+// ========== MOTOR DE ORDENS AUTOMÁTICAS ==========
 async function executarOrdensAutomaticas() {
   console.log("⏳ [ORDENS] Verificando ordens automáticas...");
   try {
@@ -906,22 +1041,16 @@ async function executarOrdensAutomaticas() {
       .select("*, fundos(*)")
       .eq("ativo", true)
       .is("processando_desde", null);
-
     if (!ordens || ordens.length === 0) {
       console.log("  📭 Nenhuma ordem ativa.");
       return;
     }
-    console.log(`  🔍 ${ordens.length} ordem(ns) para verificar.`);
-
     for (const ordem of ordens) {
       const { data: lockOk } = await supabase.from("ordens_automaticas")
         .update({ processando_desde: new Date() })
-        .eq("id", ordem.id)
-        .is("processando_desde", null)
-        .select()
-        .single();
+        .eq("id", ordem.id).is("processando_desde", null)
+        .select().single();
       if (!lockOk) continue;
-
       try {
         const uid = ordem.uid;
         const fundo = ordem.fundos;
@@ -929,16 +1058,13 @@ async function executarOrdensAutomaticas() {
         const ticker = fundo.ticker;
         const tipo = ordem.tipo;
         const rentabilidadeAlvo = ordem.rentabilidade_acionadora;
-
         const [rvRes, criptoRes] = await Promise.all([
           supabase.from("renda_variavel_investimentos").select("*").eq("uid", uid).eq("ticker", ticker).eq("status", "ativo").single(),
           supabase.from("cripto_investimentos").select("*").eq("uid", uid).eq("ticker", ticker).eq("status", "ativo").single()
         ]);
         const investimentoRV = rvRes.data;
         const investimentoCripto = criptoRes.data;
-
         let precoAtual = null, precoMedio = null, quantidade = null, investimentoId = null, tipoCarteira = null;
-
         if (investimentoRV) {
           tipoCarteira = "rv";
           precoMedio = investimentoRV.preco_medio;
@@ -961,23 +1087,19 @@ async function executarOrdensAutomaticas() {
             precoAtual = cgData[coinId]?.brl;
           } catch (e) {}
         }
-
         if (!investimentoId || !precoAtual || !precoMedio) {
           await supabase.from("ordens_automaticas").update({ processando_desde: null }).eq("id", ordem.id);
           continue;
         }
-
         const rentabilidadeAtual = ((precoAtual - precoMedio) / precoMedio) * 100;
         let executar = false;
         if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) executar = true;
         else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) executar = true;
-
         if (executar) {
           const valorVenda = precoAtual * quantidade;
           const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
           const novoSaldo = (user?.saldo ?? 0) + valorVenda;
           await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-
           if (tipoCarteira === "rv") {
             await supabase.from("renda_variavel_investimentos").update({ status: "vendido" }).eq("id", investimentoId);
             await supabase.from("transactions").insert({ uid, tipo: "venda_rv_auto", valor: valorVenda, status: "aprovado", categoria: `${ticker} (${tipo})` });
@@ -985,19 +1107,17 @@ async function executarOrdensAutomaticas() {
             await supabase.from("cripto_investimentos").update({ status: "vendido" }).eq("id", investimentoId);
             await supabase.from("transactions").insert({ uid, tipo: "venda_cripto_auto", valor: valorVenda, status: "aprovado", categoria: `${ticker} (${tipo})` });
           }
-
+          await registrarVolumeTrade(uid, Number(valorVenda));
           await supabase.from("ordens_automaticas").update({
             ativo: false, status: "executada", data_execucao: new Date(),
             preco_execucao: precoAtual, rentabilidade_execucao: rentabilidadeAtual,
             processando_desde: null
           }).eq("id", ordem.id);
-          console.log(`  ✅ Ordem ${ordem.id} executada! Venda de R$ ${valorVenda.toFixed(2)}`);
         } else {
           await supabase.from("ordens_automaticas").update({ processando_desde: null }).eq("id", ordem.id);
         }
       } catch (e) {
         await supabase.from("ordens_automaticas").update({ processando_desde: null }).eq("id", ordem.id);
-        console.warn(`  ⚠️ Erro ordem ${ordem.id}: ${e.message}`);
       }
       await new Promise(r => setTimeout(r, 1500));
     }
@@ -1012,7 +1132,6 @@ app.get("/ordens-automaticas/:uid", authMiddleware, async (req, res) => {
     .select("*, fundos(nome, ticker)")
     .eq("uid", req.user.uid)
     .order("criado_em", { ascending: false });
-
   for (const ordem of data || []) {
     if (ordem.ativo && ordem.fundos?.ticker) {
       const ticker = ordem.fundos.ticker;
@@ -1057,6 +1176,7 @@ app.delete("/ordem-automatica/:id", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ========== APORTES ==========
 app.get("/aportes-automaticos/:uid", authMiddleware, async (req, res) => {
   const { data } = await supabase.from("aportes_automaticos").select("*, fundos(nome, ticker)").eq("uid", req.user.uid).eq("ativo", true);
   res.json(data || []);
@@ -1076,6 +1196,7 @@ app.delete("/aporte-automatico/:id", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ========== COMPARADOR ==========
 app.get("/comparar-fundos", async (req, res) => {
   const tickers = req.query.tickers?.split(",") || [];
   const cacheKey = `comparar_${tickers.sort().join("_")}`;
@@ -1086,10 +1207,10 @@ app.get("/comparar-fundos", async (req, res) => {
   res.json(data || []);
 });
 
+// ========== INDICADORES ==========
 app.get("/indicadores", async (_, res) => {
   const cached = getCache("indicadores");
   if (cached) return res.json(cached);
-
   const ind = [];
   try {
     const selicRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados/ultimos/1?formato=json");
@@ -1121,15 +1242,14 @@ app.get("/indicadores", async (_, res) => {
   ind.push({ nome: "IFIX", valor: ifix.preco.toFixed(0), var: `${ifix.variacao >= 0 ? '+' : ''}${ifix.variacao.toFixed(2)}%`, positivo: ifix.variacao >= 0 });
   const usd = mapa["USDBRL"] || { preco: 5.12, variacao: -0.34 };
   ind.push({ nome: "Dólar", valor: `R$ ${usd.preco.toFixed(2)}`, var: `${usd.variacao >= 0 ? '+' : ''}${usd.variacao.toFixed(2)}%`, positivo: usd.variacao >= 0 });
-
   setCache("indicadores", ind, 300);
   res.json(ind);
 });
 
+// ========== NOTÍCIAS ==========
 app.get("/noticias", async (_, res) => {
   const cached = getCache("noticias");
   if (cached) return res.json(cached);
-
   let noticias = null;
   if (process.env.NEWS_API_KEY) {
     try {
@@ -1148,610 +1268,4 @@ app.get("/noticias", async (_, res) => {
     noticias = [
       { titulo: "Ibovespa fecha em alta com expectativa de cortes na SELIC", fonte: "InfoMoney", resumo: "Índice renovou máxima com fluxo estrangeiro positivo." },
       { titulo: "S&P 500 atinge novo recorde histórico", fonte: "Valor Econômico", resumo: "Big techs lideram ganhos." },
-      { titulo: "Dólar recua com entrada de capital", fonte: "Reuters", resumo: "Moeda americana acumula queda." },
-      { titulo: "Petrobras anuncia dividendos bilionários", fonte: "Exame", resumo: "R$ 15 bilhões aos acionistas." }
-    ];
-  }
-  setCache("noticias", noticias, 600);
-  res.json(noticias);
-});
-
-app.get("/historico-cdi", async (_, res) => {
-  const cached = getCache("historico-cdi");
-  if (cached) return res.json(cached);
-  const fallback = {
-    labels: ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"],
-    data: [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57]
-  };
-  if (!BRAPI_API_KEY) {
-    setCache("historico-cdi", fallback, 3600);
-    return res.json(fallback);
-  }
-  try {
-    const response = await axios.get("https://brapi.dev/api/v2/prime-rate", {
-      params: {
-        token: BRAPI_API_KEY, country: "brazil", historical: true,
-        start: `${new Date().getFullYear() - 1}-01-01`,
-        end: `${new Date().getFullYear()}-12-31`
-      }
-    });
-    const rates = response.data?.prime_rate || [];
-    if (rates.length > 0) {
-      const sorted = rates.sort((a, b) => new Date(a.date) - new Date(b.date));
-      const ultimos12 = sorted.slice(-12);
-      let acumulado = 100;
-      const labels = [];
-      const data = [acumulado];
-      ultimos12.forEach((item, index) => {
-        if (index > 0) {
-          const taxa = item.value / 100;
-          acumulado = acumulado * (1 + taxa);
-          data.push(parseFloat(acumulado.toFixed(2)));
-        }
-        labels.push(new Date(item.date + "T00:00:00").toLocaleString("pt-BR", { month: "short" }));
-      });
-      const resultado = { labels, data };
-      setCache("historico-cdi", resultado, 3600);
-      return res.json(resultado);
-    }
-  } catch (e) {}
-  setCache("historico-cdi", fallback, 3600);
-  res.json(fallback);
-});
-
-app.get("/historico-ibov", async (_, res) => {
-  const cached = getCache("historico-ibov");
-  if (cached) return res.json(cached);
-  const fallback = {
-    labels: ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"],
-    data: [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500]
-  };
-  if (!BRAPI_API_KEY) {
-    setCache("historico-ibov", fallback, 3600);
-    return res.json(fallback);
-  }
-  try {
-    const response = await axios.get("https://brapi.dev/api/quote/%5EBVSP", {
-      params: { token: BRAPI_API_KEY, range: "1y", interval: "1mo" }
-    });
-    const results = response.data?.results?.[0];
-    if (results?.historicalDataPrice && results.historicalDataPrice.length > 0) {
-      const historico = results.historicalDataPrice.slice(-12);
-      const labels = historico.map(item => new Date(item.date * 1000).toLocaleString("pt-BR", { month: "short" }));
-      const data = historico.map(item => item.close);
-      const resultado = { labels, data };
-      setCache("historico-ibov", resultado, 3600);
-      return res.json(resultado);
-    }
-  } catch (e) {}
-  setCache("historico-ibov", fallback, 3600);
-  res.json(fallback);
-});
-
-app.get("/taxas-renda-fixa", async (_, res) => {
-  const cached = getCache("taxas-renda-fixa");
-  if (cached) return res.json(cached);
-  let selic = 10.50, cdi = 10.40;
-  try {
-    const selicRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados/ultimos/1?formato=json");
-    const s = selicRes.data?.[0]?.valor;
-    if (s) {
-      selic = parseFloat(s.replace(",", "."));
-      cdi = selic - 0.10;
-    }
-  } catch (e) {}
-  const resultado = {
-    selic: parseFloat(selic.toFixed(2)),
-    cdi: parseFloat(cdi.toFixed(2)),
-    taxas: {
-      cdb_100: parseFloat((cdi * 1.0).toFixed(2)),
-      cdb_110: parseFloat((cdi * 1.1).toFixed(2)),
-      cdb_120: parseFloat((cdi * 1.2).toFixed(2)),
-      tesouro_selic: parseFloat((selic * 1.0).toFixed(2)),
-      tesouro_ipca: parseFloat((5.5 + 0.38).toFixed(2)),
-      lci_90: parseFloat((cdi * 0.9).toFixed(2)),
-      lca_92: parseFloat((cdi * 0.92).toFixed(2)),
-      cri_ipca: parseFloat((6.5 + 0.38).toFixed(2)),
-      cra_cdi: parseFloat((cdi * 1.02).toFixed(2)),
-      deb_infra: parseFloat((cdi * 1.15).toFixed(2)),
-      deb_energia: parseFloat((cdi * 1.1).toFixed(2))
-    }
-  };
-  setCache("taxas-renda-fixa", resultado, 300);
-  res.json(resultado);
-});
-
-app.get("/trade/cotacao/:ticker", async (req, res) => {
-  const ticker = req.params.ticker.toUpperCase();
-  const cacheKey = `trade_cotacao_${ticker}`;
-  const cached = getCache(cacheKey);
-  if (cached) return res.json(cached);
-  if (BRAPI_API_KEY) {
-    try {
-      const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
-      const result = data?.results?.[0];
-      if (result?.regularMarketPrice) {
-        const resp = {
-          preco: result.regularMarketPrice,
-          variacao: result.regularMarketChangePercent || 0,
-          high: result.regularMarketDayHigh || 0,
-          low: result.regularMarketDayLow || 0,
-          volume: result.regularMarketVolume || 0
-        };
-        setCache(cacheKey, resp, 30);
-        return res.json(resp);
-      }
-    } catch (e) {}
-  }
-  const coinId = MAPA_CRIPTO[ticker] || ticker.toLowerCase();
-  try {
-    const [priceRes, marketRes] = await Promise.all([
-      axios.get("https://api.coingecko.com/api/v3/simple/price", {
-        params: { ids: coinId, vs_currencies: "brl", include_24hr_change: "true" }
-      }),
-      axios.get("https://api.coingecko.com/api/v3/coins/markets", {
-        params: { vs_currency: "brl", ids: coinId, per_page: 1 }
-      })
-    ]);
-    const preco = priceRes.data[coinId]?.brl || 0;
-    const variacao = priceRes.data[coinId]?.brl_24h_change || 0;
-    const m = marketRes.data[0] || {};
-    const resp = { preco, variacao, high: m.high_24h || 0, low: m.low_24h || 0, volume: m.total_volume || 0 };
-    setCache(cacheKey, resp, 30);
-    return res.json(resp);
-  } catch (e) {}
-  res.json({ preco: 0, variacao: 0, high: 0, low: 0, volume: 0 });
-});
-
-app.get("/trade/historico/:ticker", async (req, res) => {
-  const ticker = req.params.ticker.toUpperCase();
-  const range = parseInt(req.query.range) || 365;
-  const cacheKey = `trade_hist_${ticker}_${range}`;
-  const cached = getCache(cacheKey);
-  if (cached) return res.json(cached);
-  if (BRAPI_API_KEY) {
-    try {
-      const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
-        params: { token: BRAPI_API_KEY, range: `${Math.floor(range / 30)}mo`, interval: "1d" }
-      });
-      const result = data?.results?.[0];
-      if (result?.historicalDataPrice) {
-        const ohlc = result.historicalDataPrice.map(item => [item.date * 1000, item.open, item.high, item.low, item.close]);
-        setCache(cacheKey, ohlc, 600);
-        return res.json(ohlc);
-      }
-    } catch (e) {}
-  }
-  const coinId = MAPA_CRIPTO[ticker] || ticker.toLowerCase();
-  try {
-    const { data } = await axios.get(`https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`, {
-      params: { vs_currency: "brl", days: Math.min(range, 365) }
-    });
-    setCache(cacheKey, data || [], 600);
-    return res.json(data || []);
-  } catch (e) {}
-  res.json([]);
-});
-
-app.get("/cartas/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("cartas").select("*").eq("uid", req.user.uid).order("criada_em", { ascending: false });
-  res.json(data || []);
-});
-
-app.post("/cartas", authMiddleware, async (req, res) => {
-  const { titulo, texto, data_abertura } = req.body;
-  const { error } = await supabase.from("cartas").insert({ uid: req.user.uid, titulo, texto, data_abertura });
-  if (error) return res.status(500).json({ erro: "Erro ao salvar" });
-  res.json({ ok: true });
-});
-
-app.get("/coins/:uid", authMiddleware, async (req, res) => {
-  const { data: user } = await supabase.from("usuarios").select("atlax_coins").eq("id", req.user.uid).single();
-  res.json({ coins: user?.atlax_coins ?? 0 });
-});
-
-app.post("/coins/adicionar", authMiddleware, limiterTrades, async (req, res) => {
-  const { quantidade, motivo } = req.body;
-  const uid = req.user.uid;
-  await supabase.from("usuarios").upsert({ id: uid, atlax_coins: 0 }, { onConflict: "id" });
-  const { data: user } = await supabase.from("usuarios").select("atlax_coins").eq("id", uid).single();
-  const novoSaldo = (user?.atlax_coins ?? 0) + quantidade;
-  await supabase.from("usuarios").update({ atlax_coins: novoSaldo }).eq("id", uid);
-  await supabase.from("coins").insert({ uid, quantidade, motivo });
-  res.json({ ok: true, novo_saldo: novoSaldo });
-});
-
-app.post("/coins/resgatar", authMiddleware, limiterTrades, async (req, res) => {
-  const { quantidade } = req.body;
-  const uid = req.user.uid;
-  const { data: user } = await supabase.from("usuarios").select("atlax_coins, saldo").eq("id", uid).single();
-  if (!user || (user.atlax_coins || 0) < quantidade) return res.status(400).json({ erro: "Coins insuficientes" });
-  const valor_creditado = quantidade * 0.05;
-  const novoCoins = (user.atlax_coins || 0) - quantidade;
-  const novoSaldo = (user.saldo || 0) + valor_creditado;
-  await supabase.from("usuarios").update({ atlax_coins: novoCoins, saldo: novoSaldo }).eq("id", uid);
-  await supabase.from("coins").insert({ uid, quantidade: -quantidade, motivo: "resgate" });
-  await supabase.from("transactions").insert({ uid, tipo: "resgate_coins", valor: valor_creditado, status: "aprovado", categoria: "coins" });
-  res.json({ ok: true, valor_creditado });
-});
-
-app.post("/ia/perguntar", authMiddleware, async (req, res) => {
-  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA indisponível" });
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      { contents: [{ parts: [{ text: req.body.mensagem }] }] }
-    );
-    res.json({ resposta: response.data.candidates[0].content.parts[0].text });
-  } catch (e) {
-    res.json({ resposta: "Não foi possível responder agora." });
-  }
-});
-
-app.post("/ia/analisar", authMiddleware, async (req, res) => {
-  if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA indisponível" });
-  try {
-    const { data: user } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
-    const { data: transacoes } = await supabase.from("transactions").select("*").eq("uid", req.user.uid).limit(20);
-    const prompt = `Analise: saldo R$ ${user.saldo}, transações ${JSON.stringify(transacoes)}. Gere análise + sugestões.`;
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      { contents: [{ parts: [{ text: prompt }] }] }
-    );
-    res.json({ resposta: response.data.candidates[0].content.parts[0].text });
-  } catch (e) {
-    res.json({ resposta: "Não foi possível analisar agora." });
-  }
-});
-
-app.get("/ia", async (req, res) => {
-  res.json({ resposta: "Faça uma pergunta direta." });
-});
-
-app.get("/contas/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("contas").select("*").eq("uid", req.user.uid);
-  res.json(data || []);
-});
-
-app.put("/conta/:id", authMiddleware, async (req, res) => {
-  const { saldo } = req.body;
-  const { error } = await supabase.from("contas").update({ saldo }).eq("id", req.params.id).eq("uid", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao atualizar" });
-  res.json({ ok: true });
-});
-
-app.post("/cartao", authMiddleware, limiterTrades, async (req, res) => {
-  const { descricao, valor } = req.body;
-  const { error } = await supabase.from("transactions").insert({ uid: req.user.uid, tipo: "cartao", valor, status: "pendente", categoria: descricao });
-  if (error) return res.status(500).json({ erro: "Erro ao adicionar" });
-  res.json({ ok: true });
-});
-
-app.post("/belvo/connect-token", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.status(500).json({ erro: "Belvo indisponível" });
-  try {
-    const response = await axios.post(
-      `${BELVO_API_URL}/api/token`,
-      {
-        id: "atlax-connect",
-        password: BELVO_SECRET_PASSWORD,
-        scopes: "read_institutions,write_links,read_links,read_accounts,read_transactions,read_credit_cards"
-      },
-      { auth: BELVO_AUTH }
-    );
-    res.json({ accessToken: response.data.access });
-  } catch (e) {
-    res.status(500).json({ erro: "Falha ao gerar token Belvo" });
-  }
-});
-
-app.get("/belvo/contas/:itemId", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.json([]);
-  try {
-    const response = await axios.get(`${BELVO_API_URL}/api/accounts/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
-    res.json(response.data.results || []);
-  } catch (e) {
-    res.json([]);
-  }
-});
-
-app.get("/belvo/transacoes/:itemId", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.json([]);
-  try {
-    const response = await axios.get(`${BELVO_API_URL}/api/transactions/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
-    res.json(response.data.results || []);
-  } catch (e) {
-    res.json([]);
-  }
-});
-
-app.get("/belvo/cartoes-contas/:itemId", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.json({ encontradas: false, cartoes: [] });
-  try {
-    const response = await axios.get(`${BELVO_API_URL}/api/credit-cards/?link=${req.params.itemId}`, { auth: BELVO_AUTH });
-    res.json({ encontradas: true, cartoes: response.data.results || [] });
-  } catch (e) {
-    res.json({ encontradas: false, cartoes: [] });
-  }
-});
-
-app.get("/belvo/faturas/:linkId/:accountId", authMiddleware, async (req, res) => {
-  if (!BELVO_AUTH) return res.json([]);
-  try {
-    const response = await axios.get(
-      `${BELVO_API_URL}/api/transactions/?link=${req.params.linkId}&account=${req.params.accountId}`,
-      { auth: BELVO_AUTH }
-    );
-    res.json(response.data.results || []);
-  } catch (e) {
-    res.json([]);
-  }
-});
-
-app.get("/watchlist/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("watchlist")
-    .select("*").eq("uid", req.user.uid).order("criado_em", { ascending: false });
-  res.json(data || []);
-});
-
-app.post("/watchlist/adicionar", authMiddleware, async (req, res) => {
-  const { ticker, nome, tipo } = req.body;
-  if (!ticker) return res.status(400).json({ erro: "Ticker obrigatório" });
-  const { error } = await supabase.from("watchlist").insert({
-    uid: req.user.uid,
-    ticker: ticker.toUpperCase(),
-    nome: sanitizar(nome || ticker, 100),
-    tipo: tipo || "acao"
-  });
-  if (error) {
-    if (error.code === "23505") return res.status(400).json({ erro: "Já está na watchlist" });
-    return res.status(500).json({ erro: "Erro ao adicionar" });
-  }
-  res.json({ ok: true });
-});
-
-app.delete("/watchlist/:ticker", authMiddleware, async (req, res) => {
-  const { error } = await supabase.from("watchlist")
-    .delete().eq("uid", req.user.uid).eq("ticker", req.params.ticker.toUpperCase());
-  if (error) return res.status(500).json({ erro: "Erro ao remover" });
-  res.json({ ok: true });
-});
-
-app.get("/alertas/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("alertas_preco")
-    .select("*").eq("uid", req.user.uid).order("criado_em", { ascending: false });
-  res.json(data || []);
-});
-
-app.post("/alerta/criar", authMiddleware, limiterTrades, async (req, res) => {
-  const { ticker, nome, preco_alvo, condicao } = req.body;
-  if (!ticker || !validarValor(preco_alvo)) return res.status(400).json({ erro: "Dados inválidos" });
-  if (!["acima", "abaixo"].includes(condicao)) return res.status(400).json({ erro: "Condição inválida" });
-  const { error } = await supabase.from("alertas_preco").insert({
-    uid: req.user.uid,
-    ticker: ticker.toUpperCase(),
-    nome: sanitizar(nome || ticker, 100),
-    preco_alvo: Number(preco_alvo),
-    condicao
-  });
-  if (error) return res.status(500).json({ erro: "Erro ao criar alerta" });
-  res.json({ ok: true });
-});
-
-app.delete("/alerta/:id", authMiddleware, async (req, res) => {
-  const { error } = await supabase.from("alertas_preco")
-    .delete().eq("id", req.params.id).eq("uid", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao remover" });
-  res.json({ ok: true });
-});
-
-app.get("/ordens-limitadas/:uid", authMiddleware, async (req, res) => {
-  const { data } = await supabase.from("ordens_limitadas")
-    .select("*").eq("uid", req.user.uid).order("criado_em", { ascending: false });
-  res.json(data || []);
-});
-
-app.post("/ordem-limitada/criar", authMiddleware, limiterTrades, async (req, res) => {
-  const { ticker, nome, tipo_operacao, preco_limite, valor_ou_quantidade } = req.body;
-  if (!ticker || !validarValor(preco_limite) || !validarValor(valor_ou_quantidade)) {
-    return res.status(400).json({ erro: "Dados inválidos" });
-  }
-  if (!["compra", "venda"].includes(tipo_operacao)) {
-    return res.status(400).json({ erro: "Tipo inválido" });
-  }
-  if (tipo_operacao === "compra") {
-    const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", req.user.uid).single();
-    if (!user || user.saldo < valor_ou_quantidade) {
-      return res.status(400).json({ erro: "Saldo insuficiente" });
-    }
-  } else {
-    const { data: inv } = await supabase.from("renda_variavel_investimentos")
-      .select("quantidade").eq("uid", req.user.uid).eq("ticker", ticker.toUpperCase()).eq("status", "ativo").single();
-    if (!inv || inv.quantidade < valor_ou_quantidade) {
-      return res.status(400).json({ erro: "Quantidade insuficiente na carteira" });
-    }
-  }
-  const { error } = await supabase.from("ordens_limitadas").insert({
-    uid: req.user.uid,
-    ticker: ticker.toUpperCase(),
-    nome: sanitizar(nome || ticker, 100),
-    tipo_operacao,
-    preco_limite: Number(preco_limite),
-    valor_ou_quantidade: Number(valor_ou_quantidade)
-  });
-  if (error) return res.status(500).json({ erro: "Erro ao criar ordem" });
-  res.json({ ok: true });
-});
-
-app.delete("/ordem-limitada/:id", authMiddleware, async (req, res) => {
-  const { error } = await supabase.from("ordens_limitadas")
-    .update({ status: "cancelada" }).eq("id", req.params.id).eq("uid", req.user.uid);
-  if (error) return res.status(500).json({ erro: "Erro ao cancelar" });
-  res.json({ ok: true });
-});
-
-async function verificarAlertasPreco() {
-  try {
-    const { data: alertas } = await supabase.from("alertas_preco")
-      .select("*").eq("disparado", false);
-    if (!alertas || alertas.length === 0) return;
-    for (const alerta of alertas) {
-      try {
-        const ticker = alerta.ticker;
-        let precoAtual = null;
-        if (BRAPI_API_KEY) {
-          try {
-            const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
-              params: { token: BRAPI_API_KEY }
-            });
-            precoAtual = cot?.results?.[0]?.regularMarketPrice;
-          } catch (e) {}
-        }
-        if (!precoAtual) {
-          const coinId = MAPA_CRIPTO[ticker.toUpperCase()] || ticker.toLowerCase();
-          try {
-            const { data: cg } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
-              params: { ids: coinId, vs_currencies: "brl" }
-            });
-            precoAtual = cg[coinId]?.brl;
-          } catch (e) {}
-        }
-        if (!precoAtual) continue;
-        let disparar = false;
-        if (alerta.condicao === "acima" && precoAtual >= alerta.preco_alvo) disparar = true;
-        else if (alerta.condicao === "abaixo" && precoAtual <= alerta.preco_alvo) disparar = true;
-        if (disparar) {
-          await supabase.from("alertas_preco").update({
-            disparado: true,
-            data_disparo: new Date(),
-            preco_no_disparo: precoAtual
-          }).eq("id", alerta.id);
-          console.log(`  🔔 Alerta disparado: ${ticker} a R$ ${precoAtual.toFixed(2)}`);
-        }
-      } catch (e) {}
-      await new Promise(r => setTimeout(r, 500));
-    }
-  } catch (e) {
-    console.error("❌ [ALERTAS] Erro:", e.message);
-  }
-}
-
-async function executarOrdensLimitadas() {
-  try {
-    const { data: ordens } = await supabase.from("ordens_limitadas")
-      .select("*").eq("status", "ativa").is("processando_desde", null);
-    if (!ordens || ordens.length === 0) return;
-    for (const ordem of ordens) {
-      const { data: lockOk } = await supabase.from("ordens_limitadas")
-        .update({ processando_desde: new Date() })
-        .eq("id", ordem.id).is("processando_desde", null)
-        .select().single();
-      if (!lockOk) continue;
-      try {
-        const ticker = ordem.ticker;
-        let precoAtual = null;
-        if (BRAPI_API_KEY) {
-          try {
-            const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
-            precoAtual = cot?.results?.[0]?.regularMarketPrice;
-          } catch (e) {}
-        }
-        if (!precoAtual) {
-          const coinId = MAPA_CRIPTO[ticker.toUpperCase()] || ticker.toLowerCase();
-          try {
-            const { data: cg } = await axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: coinId, vs_currencies: "brl" } });
-            precoAtual = cg[coinId]?.brl;
-          } catch (e) {}
-        }
-        if (!precoAtual) {
-          await supabase.from("ordens_limitadas").update({ processando_desde: null }).eq("id", ordem.id);
-          continue;
-        }
-        let executar = false;
-        if (ordem.tipo_operacao === "compra" && precoAtual <= ordem.preco_limite) executar = true;
-        else if (ordem.tipo_operacao === "venda" && precoAtual >= ordem.preco_limite) executar = true;
-        if (executar) {
-          const uid = ordem.uid;
-          if (ordem.tipo_operacao === "compra") {
-            const valorCompra = ordem.valor_ou_quantidade;
-            const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-            if (user && user.saldo >= valorCompra) {
-              const quantidade = valorCompra / precoAtual;
-              const novoSaldo = user.saldo - valorCompra;
-              await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-              await supabase.from("renda_variavel_investimentos").insert({
-                uid, ticker, nome: ordem.nome, quantidade, preco_medio: precoAtual, valor_investido: valorCompra
-              });
-              await supabase.from("transactions").insert({
-                uid, tipo: "investimento_rv_limite", valor: valorCompra, status: "aprovado", categoria: `${ticker} (limite)`
-              });
-            }
-          } else {
-            const quantidade = ordem.valor_ou_quantidade;
-            const { data: inv } = await supabase.from("renda_variavel_investimentos")
-              .select("*").eq("uid", uid).eq("ticker", ticker).eq("status", "ativo").single();
-            if (inv && inv.quantidade >= quantidade) {
-              const valorVenda = quantidade * precoAtual;
-              const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
-              const novoSaldo = (user?.saldo ?? 0) + valorVenda;
-              await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
-              await supabase.from("renda_variavel_investimentos").update({ status: "vendido" }).eq("id", inv.id);
-              await supabase.from("transactions").insert({
-                uid, tipo: "venda_rv_limite", valor: valorVenda, status: "aprovado", categoria: `${ticker} (limite)`
-              });
-            }
-          }
-          await supabase.from("ordens_limitadas").update({
-            status: "executada",
-            data_execucao: new Date(),
-            preco_execucao: precoAtual,
-            processando_desde: null
-          }).eq("id", ordem.id);
-          console.log(`  ✅ Ordem limitada executada: ${ticker} a R$ ${precoAtual.toFixed(2)}`);
-        } else {
-          await supabase.from("ordens_limitadas").update({ processando_desde: null }).eq("id", ordem.id);
-        }
-      } catch (e) {
-        await supabase.from("ordens_limitadas").update({ processando_desde: null }).eq("id", ordem.id);
-      }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  } catch (e) {
-    console.error("❌ [ORDENS LIMITADAS] Erro:", e.message);
-  }
-}
-
-app.use((req, res) => {
-  res.status(404).json({ erro: "Rota não encontrada", path: req.path });
-});
-
-app.use((err, req, res, next) => {
-  console.error("❌ Erro global:", err.message);
-  res.status(500).json({ erro: "Erro interno do servidor" });
-});
-
-setTimeout(atualizarPrecosFundos, 10000);
-setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
-
-setTimeout(executarOrdensAutomaticas, 30000);
-setInterval(executarOrdensAutomaticas, 5 * 60 * 1000);
-
-setTimeout(verificarAlertasPreco, 60000);
-setInterval(verificarAlertasPreco, 2 * 60 * 1000);
-
-setTimeout(executarOrdensLimitadas, 90000);
-setInterval(executarOrdensLimitadas, 2 * 60 * 1000);
-
-setTimeout(() => {
-  atualizarCriptos();
-  atualizarAcoesBR();
-  atualizarAcoesInternacionais();
-}, 5000);
-setInterval(() => {
-  atualizarCriptos();
-  atualizarAcoesBR();
-  atualizarAcoesInternacionais();
-}, 120 * 60 * 1000);
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
+      { titulo: "Dólar recua com entrada de capital", fonte: "
