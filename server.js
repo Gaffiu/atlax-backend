@@ -11,6 +11,7 @@ const rateLimit = require("express-rate-limit");
 const supabase = require("./supabase");
 const { MercadoPagoConfig, Payment } = require("mercadopago");
 const authMiddleware = require("./middleware/auth");
+const compression = require("compression");
 
 // ========== RETRY AUTOMÁTICO EM APIS EXTERNAS ==========
 axiosRetry(axios, {
