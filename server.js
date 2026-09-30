@@ -24,7 +24,6 @@ axiosRetry(axios, {
 axios.defaults.timeout = 15000;
 
 const app = express();
-
 app.use(compression());
 
 const limiterGeral = rateLimit({
@@ -78,23 +77,18 @@ const {
 const TAXA_DEPOSITO = 0.10;
 const TAXA_SAQUE = 0.10;
 const SAQUE_MINIMO = 100;
+const VERSAO_TERMOS = "v1.0";
 
 const cache = new Map();
-
 function getCache(key) {
   const item = cache.get(key);
   if (!item) return null;
-  if (Date.now() > item.expira) {
-    cache.delete(key);
-    return null;
-  }
+  if (Date.now() > item.expira) { cache.delete(key); return null; }
   return item.valor;
 }
-
 function setCache(key, valor, ttlSegundos = 300) {
   cache.set(key, { valor, expira: Date.now() + ttlSegundos * 1000 });
 }
-
 setInterval(() => {
   const agora = Date.now();
   for (const [key, item] of cache.entries()) {
@@ -106,24 +100,48 @@ function sanitizar(str, max = 500) {
   if (typeof str !== "string") return "";
   return str.replace(/<[^>]*>/g, "").replace(/[<>"'`]/g, "").trim().slice(0, max);
 }
-
 function validarEmail(email) {
   return typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
-
 function validarTelefone(tel) {
   if (!tel) return true;
   return /^[\d\s()+-]{8,20}$/.test(tel);
 }
-
 function validarChavePix(chave) {
   if (!chave || typeof chave !== "string") return false;
   return chave.trim().length >= 4 && chave.trim().length <= 100;
 }
-
 function validarValor(valor) {
   const n = Number(valor);
   return !isNaN(n) && n > 0 && n < 1000000;
+}
+function validarCPF(cpf) {
+  if (!cpf) return false;
+  const limpo = String(cpf).replace(/\D/g, "");
+  if (limpo.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(limpo)) return false;
+  let soma = 0, resto;
+  for (let i = 1; i <= 9; i++) soma += parseInt(limpo.substring(i - 1, i)) * (11 - i);
+  resto = (soma * 10) % 11;
+  if (resto === 10 || resto === 11) resto = 0;
+  if (resto !== parseInt(limpo.substring(9, 10))) return false;
+  soma = 0;
+  for (let i = 1; i <= 10; i++) soma += parseInt(limpo.substring(i - 1, i)) * (12 - i);
+  resto = (soma * 10) % 11;
+  if (resto === 10 || resto === 11) resto = 0;
+  if (resto !== parseInt(limpo.substring(10, 11))) return false;
+  return true;
+}
+
+async function verificarCompliance(uid, exigirKYC = false) {
+  const { data: user } = await supabase.from("usuarios")
+    .select("termos_aceitos, kyc_aprovado, suitability_feito")
+    .eq("id", uid).single();
+  if (!user) return { ok: false, erro: "Usuário não encontrado" };
+  if (!user.termos_aceitos) return { ok: false, erro: "Você precisa aceitar os Termos de Uso" };
+  if (!user.suitability_feito) return { ok: false, erro: "Você precisa preencher o questionário de perfil de investidor" };
+  if (exigirKYC && !user.kyc_aprovado) return { ok: false, erro: "Você precisa completar a verificação de identidade (KYC) antes de sacar" };
+  return { ok: true };
 }
 
 let payment = null;
@@ -228,7 +246,6 @@ async function atualizarAcoesInternacionais() {
 
 async function atualizarPrecosFundos() {
   console.log("📊 Atualizando preços dos fundos...");
-
   if (BRAPI_API_KEY) {
     const todosTickers = [
       "PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "WEGE3", "MGLU3",
@@ -253,7 +270,6 @@ async function atualizarPrecosFundos() {
       console.warn(`  ⚠️ Erro batch Brapi: ${e.message}`);
     }
   }
-
   const { data: cotacoes } = await supabase.from("cotacoes").select("*");
   if (cotacoes) {
     const mapa = {};
@@ -267,10 +283,171 @@ async function atualizarPrecosFundos() {
     }
     console.log("  🪙 Criptos sincronizadas");
   }
-
   console.log("📊 Preços dos fundos atualizados!");
 }
 
+// ========== COMPLIANCE ==========
+app.get("/compliance/status", authMiddleware, async (req, res) => {
+  const { data: user } = await supabase.from("usuarios")
+    .select("termos_aceitos, kyc_aprovado, suitability_feito")
+    .eq("id", req.user.uid).single();
+  res.json({
+    termos_aceitos: user?.termos_aceitos || false,
+    kyc_aprovado: user?.kyc_aprovado || false,
+    suitability_feito: user?.suitability_feito || false,
+    versao_termos: VERSAO_TERMOS
+  });
+});
+
+app.post("/compliance/aceitar-termos", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    await supabase.from("termos_aceitos").upsert({
+      uid, versao: VERSAO_TERMOS, aceito_em: new Date(),
+      ip: req.headers["x-forwarded-for"] || req.socket.remoteAddress
+    }, { onConflict: "uid,versao" });
+    await supabase.from("usuarios").update({ termos_aceitos: true }).eq("id", uid);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao aceitar termos" });
+  }
+});
+
+app.post("/compliance/kyc", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { cpf, nome_completo, data_nascimento, telefone, endereco_rua, endereco_numero, endereco_cidade, endereco_estado, endereco_cep } = req.body;
+    if (!validarCPF(cpf)) return res.status(400).json({ erro: "CPF inválido" });
+    if (!nome_completo || nome_completo.trim().split(" ").length < 2) return res.status(400).json({ erro: "Informe nome completo" });
+    if (!data_nascimento) return res.status(400).json({ erro: "Data de nascimento obrigatória" });
+
+    await supabase.from("kyc").upsert({
+      uid,
+      cpf: cpf.replace(/\D/g, ""),
+      nome_completo: sanitizar(nome_completo, 200),
+      data_nascimento,
+      telefone: sanitizar(telefone || "", 20),
+      endereco_rua: sanitizar(endereco_rua || "", 200),
+      endereco_numero: sanitizar(endereco_numero || "", 20),
+      endereco_cidade: sanitizar(endereco_cidade || "", 100),
+      endereco_estado: sanitizar(endereco_estado || "", 2),
+      endereco_cep: sanitizar(endereco_cep || "", 10),
+      status: "aprovado",
+      aprovado_em: new Date()
+    }, { onConflict: "uid" });
+
+    await supabase.from("usuarios").update({ kyc_aprovado: true }).eq("id", uid);
+    res.json({ ok: true, mensagem: "KYC aprovado com sucesso" });
+  } catch (e) {
+    console.error("Erro KYC:", e.message);
+    res.status(500).json({ erro: "Erro ao processar KYC" });
+  }
+});
+
+app.get("/compliance/kyc", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("kyc").select("*").eq("uid", req.user.uid).single();
+  res.json(data || {});
+});
+
+const PERGUNTAS_SUITABILITY = [
+  { id: 1, texto: "Qual seu objetivo principal ao investir?", respostas: [
+    { t: "Preservar capital", p: 0 },
+    { t: "Gerar renda extra", p: 1 },
+    { t: "Multiplicar patrimônio", p: 3 }
+  ]},
+  { id: 2, texto: "Por quanto tempo pretende deixar investido?", respostas: [
+    { t: "Menos de 1 ano", p: 0 },
+    { t: "De 1 a 5 anos", p: 1 },
+    { t: "Mais de 5 anos", p: 3 }
+  ]},
+  { id: 3, texto: "Se seus investimentos caíssem 20%, o que faria?", respostas: [
+    { t: "Venderia tudo", p: 0 },
+    { t: "Manteria posição", p: 1 },
+    { t: "Compraria mais", p: 3 }
+  ]},
+  { id: 4, texto: "Qual sua experiência com investimentos?", respostas: [
+    { t: "Nenhuma", p: 0 },
+    { t: "Alguma experiência", p: 1 },
+    { t: "Bastante experiência", p: 3 }
+  ]},
+  { id: 5, texto: "Qual % da renda pode investir por mês?", respostas: [
+    { t: "Até 10%", p: 0 },
+    { t: "10% a 30%", p: 1 },
+    { t: "Mais de 30%", p: 3 }
+  ]}
+];
+
+app.get("/compliance/suitability/perguntas", (_, res) => {
+  const publicas = PERGUNTAS_SUITABILITY.map(p => ({
+    id: p.id, texto: p.texto,
+    respostas: p.respostas.map(r => r.t)
+  }));
+  res.json(publicas);
+});
+
+app.post("/compliance/suitability", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { respostas } = req.body;
+    if (!Array.isArray(respostas) || respostas.length !== PERGUNTAS_SUITABILITY.length) {
+      return res.status(400).json({ erro: "Responda todas as perguntas" });
+    }
+
+    let pontuacao = 0;
+    const detalhes = {};
+    for (const pergunta of PERGUNTAS_SUITABILITY) {
+      const idx = respostas[pergunta.id - 1];
+      if (idx === undefined || idx < 0 || idx >= pergunta.respostas.length) {
+        return res.status(400).json({ erro: "Resposta inválida" });
+      }
+      pontuacao += pergunta.respostas[idx].p;
+      detalhes[pergunta.id] = pergunta.respostas[idx].t;
+    }
+
+    let perfil = "conservador";
+    if (pontuacao >= 10) perfil = "arrojado";
+    else if (pontuacao >= 5) perfil = "moderado";
+
+    await supabase.from("suitability").upsert({
+      uid, perfil, pontuacao, respostas: detalhes, preenchido_em: new Date()
+    }, { onConflict: "uid" });
+
+    await supabase.from("usuarios").update({ suitability_feito: true }).eq("id", uid);
+    res.json({ ok: true, perfil, pontuacao });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao processar suitability" });
+  }
+});
+
+app.get("/compliance/suitability", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("suitability").select("*").eq("uid", req.user.uid).single();
+  res.json(data || {});
+});
+
+// ========== SUPORTE (SAC/OUVIDORIA) ==========
+app.post("/suporte/criar", authMiddleware, limiterTrades, async (req, res) => {
+  const { tipo, assunto, mensagem } = req.body;
+  if (!["duvida", "reclamacao", "sugestao", "ouvidoria"].includes(tipo)) {
+    return res.status(400).json({ erro: "Tipo inválido" });
+  }
+  if (!assunto || !mensagem) return res.status(400).json({ erro: "Preencha assunto e mensagem" });
+  const { error } = await supabase.from("solicitacoes_suporte").insert({
+    uid: req.user.uid,
+    tipo,
+    assunto: sanitizar(assunto, 200),
+    mensagem: sanitizar(mensagem, 2000)
+  });
+  if (error) return res.status(500).json({ erro: "Erro ao criar solicitação" });
+  res.json({ ok: true });
+});
+
+app.get("/suporte/lista/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("solicitacoes_suporte")
+    .select("*").eq("uid", req.user.uid).order("criado_em", { ascending: false });
+  res.json(data || []);
+});
+
+// ========== ROTAS ==========
 app.get("/", (_, res) => res.send("API Atlax 🚀"));
 app.get("/health", (_, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
 
@@ -335,17 +512,10 @@ app.put("/perfil/:uid", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/email/verificado", authMiddleware, async (req, res) => {
-  try {
-    await supabase.from("usuarios").update({ email_verificado: true }).eq("id", req.user.uid);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ erro: "Erro ao marcar email" });
-  }
-});
-
 app.post("/deposito", authMiddleware, limiterTrades, async (req, res) => {
   try {
+    const comp = await verificarCompliance(req.user.uid);
+    if (!comp.ok) return res.status(403).json({ erro: comp.erro });
     if (!payment) return res.status(500).json({ erro: "Método indisponível" });
     const { valor } = req.body;
     if (!validarValor(valor)) return res.status(400).json({ erro: "Valor inválido" });
@@ -395,6 +565,8 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
 
 app.post("/saque", authMiddleware, limiterTrades, async (req, res) => {
   try {
+    const comp = await verificarCompliance(req.user.uid, true);
+    if (!comp.ok) return res.status(403).json({ erro: comp.erro });
     const { valor, pix } = req.body;
     const uid = req.user.uid;
     const valorSaque = Number(valor);
@@ -424,6 +596,8 @@ app.post("/saque", authMiddleware, limiterTrades, async (req, res) => {
 
 app.post("/investir", authMiddleware, limiterTrades, async (req, res) => {
   try {
+    const comp = await verificarCompliance(req.user.uid);
+    if (!comp.ok) return res.status(403).json({ erro: comp.erro });
     const { tipo, valor } = req.body;
     const uid = req.user.uid;
     if (!tipo || !validarValor(valor)) return res.status(400).json({ erro: "Valor inválido" });
@@ -439,8 +613,10 @@ app.post("/investir", authMiddleware, limiterTrades, async (req, res) => {
 });
 
 app.post("/deposito-cripto", authMiddleware, limiterTrades, async (req, res) => {
-  if (!NOWPAYMENTS_API_KEY) return res.status(500).json({ erro: "Depósito cripto indisponível" });
   try {
+    const comp = await verificarCompliance(req.user.uid);
+    if (!comp.ok) return res.status(403).json({ erro: comp.erro });
+    if (!NOWPAYMENTS_API_KEY) return res.status(500).json({ erro: "Depósito cripto indisponível" });
     const { currency, amount } = req.body;
     const uid = req.user.uid;
     if (!currency || !validarValor(amount)) return res.status(400).json({ erro: "Dados inválidos" });
@@ -521,6 +697,8 @@ app.get("/carteira/:uid", authMiddleware, async (req, res) => {
 });
 
 app.post("/renda-fixa/aplicar", authMiddleware, limiterTrades, async (req, res) => {
+  const comp = await verificarCompliance(req.user.uid);
+  if (!comp.ok) return res.status(403).json({ erro: comp.erro });
   const { ticker, valor } = req.body;
   const uid = req.user.uid;
   if (!ticker || !validarValor(valor)) return res.status(400).json({ erro: "Dados inválidos" });
@@ -563,6 +741,8 @@ app.post("/renda-fixa/resgatar", authMiddleware, limiterTrades, async (req, res)
 });
 
 app.post("/renda-variavel/comprar", authMiddleware, limiterTrades, async (req, res) => {
+  const comp = await verificarCompliance(req.user.uid);
+  if (!comp.ok) return res.status(403).json({ erro: comp.erro });
   const { ticker, valor } = req.body;
   const uid = req.user.uid;
   if (!ticker || !validarValor(valor)) return res.status(400).json({ erro: "Dados inválidos" });
@@ -612,6 +792,8 @@ app.post("/renda-variavel/vender", authMiddleware, limiterTrades, async (req, re
 });
 
 app.post("/fundos/aplicar", authMiddleware, limiterTrades, async (req, res) => {
+  const comp = await verificarCompliance(req.user.uid);
+  if (!comp.ok) return res.status(403).json({ erro: comp.erro });
   const { fundo_id, valor } = req.body;
   const uid = req.user.uid;
   if (!fundo_id || !validarValor(valor)) return res.status(400).json({ erro: "Dados inválidos" });
@@ -660,6 +842,8 @@ app.post("/fundos/resgatar", authMiddleware, limiterTrades, async (req, res) => 
 });
 
 app.post("/cripto/comprar", authMiddleware, limiterTrades, async (req, res) => {
+  const comp = await verificarCompliance(req.user.uid);
+  if (!comp.ok) return res.status(403).json({ erro: comp.erro });
   const { ticker, valor } = req.body;
   const uid = req.user.uid;
   if (!ticker || !validarValor(valor)) return res.status(400).json({ erro: "Dados inválidos" });
@@ -975,7 +1159,6 @@ app.get("/noticias", async (_, res) => {
 app.get("/historico-cdi", async (_, res) => {
   const cached = getCache("historico-cdi");
   if (cached) return res.json(cached);
-
   const fallback = {
     labels: ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"],
     data: [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57]
@@ -984,7 +1167,6 @@ app.get("/historico-cdi", async (_, res) => {
     setCache("historico-cdi", fallback, 3600);
     return res.json(fallback);
   }
-
   try {
     const response = await axios.get("https://brapi.dev/api/v2/prime-rate", {
       params: {
@@ -1020,7 +1202,6 @@ app.get("/historico-cdi", async (_, res) => {
 app.get("/historico-ibov", async (_, res) => {
   const cached = getCache("historico-ibov");
   if (cached) return res.json(cached);
-
   const fallback = {
     labels: ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"],
     data: [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500]
@@ -1029,7 +1210,6 @@ app.get("/historico-ibov", async (_, res) => {
     setCache("historico-ibov", fallback, 3600);
     return res.json(fallback);
   }
-
   try {
     const response = await axios.get("https://brapi.dev/api/quote/%5EBVSP", {
       params: { token: BRAPI_API_KEY, range: "1y", interval: "1mo" }
@@ -1051,7 +1231,6 @@ app.get("/historico-ibov", async (_, res) => {
 app.get("/taxas-renda-fixa", async (_, res) => {
   const cached = getCache("taxas-renda-fixa");
   if (cached) return res.json(cached);
-
   let selic = 10.50, cdi = 10.40;
   try {
     const selicRes = await axios.get("https://api.bcb.gov.br/dados/serie/bcdata.sgs.4189/dados/ultimos/1?formato=json");
@@ -1087,7 +1266,6 @@ app.get("/trade/cotacao/:ticker", async (req, res) => {
   const cacheKey = `trade_cotacao_${ticker}`;
   const cached = getCache(cacheKey);
   if (cached) return res.json(cached);
-
   if (BRAPI_API_KEY) {
     try {
       const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
@@ -1131,7 +1309,6 @@ app.get("/trade/historico/:ticker", async (req, res) => {
   const cacheKey = `trade_hist_${ticker}_${range}`;
   const cached = getCache(cacheKey);
   if (cached) return res.json(cached);
-
   if (BRAPI_API_KEY) {
     try {
       const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
@@ -1148,7 +1325,7 @@ app.get("/trade/historico/:ticker", async (req, res) => {
   const coinId = MAPA_CRIPTO[ticker] || ticker.toLowerCase();
   try {
     const { data } = await axios.get(`https://api.coingecko.com/api/v3/coins/${coinId}/ohlc`, {
-      params: { vs_currencies: undefined, vs_currency: "brl", days: Math.min(range, 365) }
+      params: { vs_currency: "brl", days: Math.min(range, 365) }
     });
     setCache(cacheKey, data || [], 600);
     return res.json(data || []);
@@ -1382,7 +1559,6 @@ app.post("/ordem-limitada/criar", authMiddleware, limiterTrades, async (req, res
   if (!["compra", "venda"].includes(tipo_operacao)) {
     return res.status(400).json({ erro: "Tipo inválido" });
   }
-
   if (tipo_operacao === "compra") {
     const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", req.user.uid).single();
     if (!user || user.saldo < valor_ou_quantidade) {
@@ -1395,7 +1571,6 @@ app.post("/ordem-limitada/criar", authMiddleware, limiterTrades, async (req, res
       return res.status(400).json({ erro: "Quantidade insuficiente na carteira" });
     }
   }
-
   const { error } = await supabase.from("ordens_limitadas").insert({
     uid: req.user.uid,
     ticker: ticker.toUpperCase(),
@@ -1415,45 +1590,15 @@ app.delete("/ordem-limitada/:id", authMiddleware, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/grafico/comparativo/:uid", authMiddleware, async (req, res) => {
-  const { data: transacoes } = await supabase.from("transactions")
-    .select("*").eq("uid", req.user.uid)
-    .order("criado_em", { ascending: true });
-
-  let saldo = 0;
-  const carteira = [];
-  (transacoes || []).forEach(t => {
-    if (["deposito", "resgate", "resgate_coins", "venda_rv", "venda_cripto"].includes(t.tipo)) saldo += Number(t.valor);
-    else if (["saque", "investimento", "investimento_rf", "investimento_rv", "investimento_cripto"].includes(t.tipo)) saldo -= Number(t.valor);
-    carteira.push({ data: t.criado_em, valor: saldo });
-  });
-
-  const cdiHistorico = getCache("historico-cdi") || {
-    data: [100, 100.82, 101.65, 102.49, 103.34, 104.20, 105.07, 105.95, 106.84, 107.74, 108.65, 109.57]
-  };
-  const ibovHistorico = getCache("historico-ibov") || {
-    data: [125000, 126000, 124000, 128000, 130000, 128000, 131000, 129000, 132000, 130000, 128500, 128500]
-  };
-
-  res.json({
-    carteira,
-    cdi: cdiHistorico.data,
-    ibov: ibovHistorico.data
-  });
-});
-
 async function verificarAlertasPreco() {
   try {
     const { data: alertas } = await supabase.from("alertas_preco")
       .select("*").eq("disparado", false);
-
     if (!alertas || alertas.length === 0) return;
-
     for (const alerta of alertas) {
       try {
         const ticker = alerta.ticker;
         let precoAtual = null;
-
         if (BRAPI_API_KEY) {
           try {
             const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
@@ -1462,7 +1607,6 @@ async function verificarAlertasPreco() {
             precoAtual = cot?.results?.[0]?.regularMarketPrice;
           } catch (e) {}
         }
-
         if (!precoAtual) {
           const coinId = MAPA_CRIPTO[ticker.toUpperCase()] || ticker.toLowerCase();
           try {
@@ -1472,13 +1616,10 @@ async function verificarAlertasPreco() {
             precoAtual = cg[coinId]?.brl;
           } catch (e) {}
         }
-
         if (!precoAtual) continue;
-
         let disparar = false;
         if (alerta.condicao === "acima" && precoAtual >= alerta.preco_alvo) disparar = true;
         else if (alerta.condicao === "abaixo" && precoAtual <= alerta.preco_alvo) disparar = true;
-
         if (disparar) {
           await supabase.from("alertas_preco").update({
             disparado: true,
@@ -1499,20 +1640,16 @@ async function executarOrdensLimitadas() {
   try {
     const { data: ordens } = await supabase.from("ordens_limitadas")
       .select("*").eq("status", "ativa").is("processando_desde", null);
-
     if (!ordens || ordens.length === 0) return;
-
     for (const ordem of ordens) {
       const { data: lockOk } = await supabase.from("ordens_limitadas")
         .update({ processando_desde: new Date() })
         .eq("id", ordem.id).is("processando_desde", null)
         .select().single();
       if (!lockOk) continue;
-
       try {
         const ticker = ordem.ticker;
         let precoAtual = null;
-
         if (BRAPI_API_KEY) {
           try {
             const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
@@ -1526,19 +1663,15 @@ async function executarOrdensLimitadas() {
             precoAtual = cg[coinId]?.brl;
           } catch (e) {}
         }
-
         if (!precoAtual) {
           await supabase.from("ordens_limitadas").update({ processando_desde: null }).eq("id", ordem.id);
           continue;
         }
-
         let executar = false;
         if (ordem.tipo_operacao === "compra" && precoAtual <= ordem.preco_limite) executar = true;
         else if (ordem.tipo_operacao === "venda" && precoAtual >= ordem.preco_limite) executar = true;
-
         if (executar) {
           const uid = ordem.uid;
-
           if (ordem.tipo_operacao === "compra") {
             const valorCompra = ordem.valor_ou_quantidade;
             const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
@@ -1568,7 +1701,6 @@ async function executarOrdensLimitadas() {
               });
             }
           }
-
           await supabase.from("ordens_limitadas").update({
             status: "executada",
             data_execucao: new Date(),
