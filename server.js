@@ -67,6 +67,7 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: "1mb" }));
+app.use(compression());
 
 const {
   MP_TOKEN, BRAPI_API_KEY, ALPHA_VANTAGE_API_KEY,
