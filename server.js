@@ -1,4 +1,7 @@
 console.log("🔥 Iniciando servidor...");
+
+// ✅ Aumenta o limite global de listeners — evita MaxListenersExceededWarning em TLSSocket
+require("events").EventEmitter.defaultMaxListeners = 50;
 process.on("uncaughtException", (err) => console.error("💥 Erro:", err));
 process.on("unhandledRejection", (err) => console.error("💥 Promise:", err));
 process.setMaxListeners(50);
