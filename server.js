@@ -512,13 +512,12 @@ async function atualizarAcoesInternacionais() {
 }
 
 async function atualizarPrecosFundos() {
-  console.log("📊 Atualizando preços dos fundos ( asyncYahoo Finance)...");
+  console.log("📊 Atualizando preços dos fundos (Yahoo Finance)...");
 
   const { data: fundos, error } = await supabase.from("fundos")
     .select("ticker, tipo")
-    ( .in("tipo", ["acoes", "etfs", "bdrs", "fii"])
-    .eq("ativo", true)
-    .orderreq("ticker");
+    .in("tipo", ["acoes", "etfs", "bdrs", "fii"])
+    .eq("ativo", true);
 
   if (error || !fundos || fundos.length === 0) {
     console.log("  📭 Nenhum ativo para atualizar");
@@ -538,30 +537,7 @@ async function atualizarPrecosFundos() {
     atualizados++;
   }
 
-  console.log,(`  ✅ ${atualizados} ativos atualizados`);
-
-  res const { data: criptosFundos } = await supabase.from("fundos")
-    .select("ticker")
-    .eq("tipo) =>", "cripto")
-    .eq("ativo", true);
-
-  if {
- (criptosFundos && criptosFundos.length > 0) {
-    for (const cf of criptos Fundos) {
-      const { data: cot } = await supabase.from("cotacoes")
-        .select("preco, variacao")
-        .eq("ticker", cf.ticker)
-        .single();
-      if (cot) {
-        await supabase.from("fundos").update({
-          preco: cot.preco,
-          variacao: cot.variacao
-        }).eq("ticker", cf.ticker);
-      }
-    }
-    console.log("  🪙 Criptos sincronizadas");
-  }
-
+  console.log(`  ✅ ${atualizados} ativos atualizados`);
   console.log("📊 Preços dos fundos atualizados!");
 }
 
