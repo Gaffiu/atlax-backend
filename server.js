@@ -276,10 +276,15 @@ const MAPA_CRIPTO = {
   JUP: "jupiter-exchange-solana", PYTH: "pyth-network"
 };
 
+// ========== ✅ PATCH 1: atualizarCriptos (tratamento 429) ==========
 async function atualizarCriptos() {
   try {
     const { data } = await axios.get("https://api.coingecko.com/api/v3/simple/price", {
-      params: { ids: "bitcoin,ethereum,solana,binancecoin,ripple,cardano,polkadot", vs_currencies: "brl", include_24hr_change: "true" }
+      params: {
+        ids: "bitcoin,ethereum,solana,binancecoin,ripple,cardano,polkadot",
+        vs_currencies: "brl",
+        include_24hr_change: "true"
+      }
     });
     const precos = {
       BTC: { preco: data.bitcoin.brl, variacao: data.bitcoin.brl_24h_change },
@@ -297,7 +302,11 @@ async function atualizarCriptos() {
     }
     console.log("🪙 Criptos atualizadas");
   } catch (e) {
-    console.error("❌ CoinGecko:", e.message);
+    if (e.response?.status === 429) {
+      console.warn("⏸️ CoinGecko rate limit — aguardando próximo ciclo");
+    } else {
+      console.error("❌ CoinGecko:", e.message);
+    }
   }
 }
 
@@ -342,31 +351,36 @@ async function atualizarAcoesInternacionais() {
   console.log("🌍 Ações internacionais atualizadas");
 }
 
+// ========== ✅ PATCH 2: atualizarPrecosFundos (loop individual) ==========
 async function atualizarPrecosFundos() {
   console.log("📊 Atualizando preços dos fundos...");
   if (BRAPI_API_KEY) {
+    // ⚠️ Brapi free tier: máx 1-3 tickers por chamada → vai 1 por 1
     const todosTickers = [
       "PETR4", "VALE3", "ITUB4", "BBDC4", "ABEV3", "WEGE3", "MGLU3",
-      "BOVA11", "SMAL11", "IVVB11", "FIND11",
+      "BOVA11", "SMAL11", "IVVB11",
       "AAPL34", "TSLA34", "GOGL34", "AMZO34", "MSFT34"
     ];
-    try {
-      const { data } = await axios.get(`https://brapi.dev/api/quote/${todosTickers.join(",")}`, {
-        params: { token: BRAPI_API_KEY }
-      });
-      const results = data?.results || [];
-      for (const r of results) {
+    let atualizados = 0;
+    for (const ticker of todosTickers) {
+      try {
+        const { data } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, {
+          params: { token: BRAPI_API_KEY }
+        });
+        const r = data?.results?.[0];
         if (r?.regularMarketPrice) {
           await supabase.from("fundos").update({
             preco: r.regularMarketPrice,
             variacao: r.regularMarketChangePercent || 0
           }).eq("ticker", r.symbol);
+          atualizados++;
         }
+      } catch (e) {
+        console.warn(`  ⚠️ ${ticker}: HTTP ${e.response?.status || e.message}`);
       }
-      console.log(`  ✅ ${results.length} tickers atualizados`);
-    } catch (e) {
-      console.warn(`  ⚠️ Erro batch Brapi: ${e.message}`);
+      await new Promise(r => setTimeout(r, 500));
     }
+    console.log(`  ✅ ${atualizados} tickers atualizados`);
   }
   const { data: cotacoes } = await supabase.from("cotacoes").select("*");
   if (cotacoes) {
@@ -1051,7 +1065,6 @@ app.post("/cripto/vender", authMiddleware, limiterTrades, async (req, res) => {
 });
 
 // ========== MOTOR DE ORDENS AUTOMÁTICAS ==========
-// ⚠️ BUG CORRIGIDO: enviarPush fora de escopo removido; agora é chamado dentro do if(executar)
 async function executarOrdensAutomaticas() {
   console.log("⏳ [ORDENS] Verificando ordens automáticas...");
   try {
@@ -2078,28 +2091,36 @@ app.use((err, req, res, next) => {
   res.status(500).json({ erro: "Erro interno do servidor" });
 });
 
-setTimeout(atualizarPrecosFundos, 10000);
-setInterval(atualizarPrecosFundos, 30 * 60 * 1000);
+// ========== ✅ PATCH 3: Agendamentos escalonados ==========
+// ⏱️ Agendamentos escalonados — evita estourar rate limits no boot
 
-setTimeout(executarOrdensAutomaticas, 30000);
-setInterval(executarOrdensAutomaticas, 5 * 60 * 1000);
-
-setTimeout(verificarAlertasPreco, 60000);
-setInterval(verificarAlertasPreco, 2 * 60 * 1000);
-
-setTimeout(executarOrdensLimitadas, 90000);
-setInterval(executarOrdensLimitadas, 2 * 60 * 1000);
-
+// 1. Ações BR + internacionais: 15s (usa Brapi + Alpha Vantage)
 setTimeout(() => {
-  atualizarCriptos();
   atualizarAcoesBR();
   atualizarAcoesInternacionais();
-}, 5000);
+}, 15000);
+
+// 2. Criptos no CoinGecko: 30s (fora da janela dos outros)
+setTimeout(atualizarCriptos, 30000);
+
+// 3. Preços dos fundos (Brapi individual): 45s
+setTimeout(atualizarPrecosFundos, 45000);
+
+// 4. Motores de background
+setTimeout(executarOrdensAutomaticas, 30000);
+setTimeout(verificarAlertasPreco, 60000);
+setTimeout(executarOrdensLimitadas, 90000);
+
+// 🔄 Recorrências
+setInterval(atualizarPrecosFundos, 30 * 60 * 1000);          // 30 min
+setInterval(executarOrdensAutomaticas, 5 * 60 * 1000);       // 5 min
+setInterval(verificarAlertasPreco, 2 * 60 * 1000);           // 2 min
+setInterval(executarOrdensLimitadas, 2 * 60 * 1000);         // 2 min
 setInterval(() => {
   atualizarCriptos();
   atualizarAcoesBR();
   atualizarAcoesInternacionais();
-}, 120 * 60 * 1000);
+}, 120 * 60 * 1000);                                          // 2h
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Porta ${PORT}`));
