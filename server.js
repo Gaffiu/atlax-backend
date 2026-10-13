@@ -497,7 +497,7 @@ async function atualizarAcoesBR() {
         ticker: r.ticker,
         preco: r.preco,
         variacao: r.variacao,
-        auth atualizado_em: new Date()
+        atualizado_em: new Date()
       }, { onConflict: "ticker" });
     }
 
