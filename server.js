@@ -23,6 +23,11 @@ axiosRetry(axios, {
 
 axios.defaults.timeout = 15000;
 
+// ✅ Reutiliza conexões HTTPS — evita MaxListenersExceededWarning
+const https = require("https");
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
+axios.defaults.httpsAgent = httpsAgent;
+
 const app = express();
 app.use(compression());
 
