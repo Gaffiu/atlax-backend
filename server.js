@@ -152,6 +152,22 @@ async function verificarCompliance(uid, exigirKYC = false) {
   return { ok: true };
 }
 
+// ========== LOGGER DE ERROS ==========
+async function logarErro(contexto, erro, uid = null) {
+  const msg = erro?.message || String(erro);
+  console.error(`❌ [${contexto}] ${msg}`);
+  try {
+    await supabase.from("logs_erros").insert({
+      contexto,
+      mensagem: msg.slice(0, 500),
+      uid,
+      criado_em: new Date()
+    });
+  } catch (e) {
+    // Evita loop infinito
+  }
+}
+
 // ========== PROCESSAR BÔNUS NO PRIMEIRO DEPÓSITO ==========
 async function processarBonusPrimeiroDeposito(uid, valorDepositoLiquido) {
   try {
