@@ -14,7 +14,7 @@ const cors = require("cors");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const supabase = require("./supabase");
-const { MercadoP);
+const { MercadoPagoConfig, Payment } = require("mercadopago");   // ✅
 
 agoConfig, Payment } = require("mercadopago");
 const authMiddleware = require("./middleware/auth");
