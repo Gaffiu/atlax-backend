@@ -2036,6 +2036,17 @@ app.get("/push/historico/:uid", authMiddleware, async (req, res) => {
 
 // ==========================================
 
+app.get("/admin/erros", authMiddleware, async (req, res) => {
+  // Só admin pode ver (trocamos para o seu UID)
+  const ADMIN_UIDS = (process.env.ADMIN_UIDS || "").split(",").filter(Boolean);
+  if (ADMIN_UIDS.length > 0 && !ADMIN_UIDS.includes(req.user.uid)) {
+    return res.status(403).json({ erro: "Acesso negado" });
+  }
+  const { data } = await supabase.from("logs_erros")
+    .select("*").order("criado_em", { ascending: false }).limit(100);
+  res.json(data || []);
+});
+
 app.use((req, res) => {
   res.status(404).json({ erro: "Rota não encontrada", path: req.path });
 });
