@@ -507,7 +507,7 @@ async function atualizarAcoesBR() {
   }
 }
 
-async function atualizarA,coesInternacionais() {
+async function atualizarAcoesInternacionais() {
   return;
 }
 
