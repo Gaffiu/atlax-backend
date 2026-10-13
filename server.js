@@ -660,6 +660,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       if (uid) {
         const taxa = valor * TAXA_DEPOSITO;
         const valorLiquido = valor - taxa;
+        await enviarPush(uid, "✅ Depósito aprovado", `Seu saldo foi creditado com R$ ${valorLiquido.toFixed(2)}.`);
         await supabase.from("usuarios").upsert({ id: uid, saldo: 0 }, { onConflict: "id" });
         const { data: userAtual } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
         const novoSaldo = (userAtual?.saldo ?? 0) + Number(valorLiquido);
@@ -1036,6 +1037,7 @@ app.post("/cripto/vender", authMiddleware, limiterTrades, async (req, res) => {
 // ========== MOTOR DE ORDENS AUTOMÁTICAS ==========
 async function executarOrdensAutomaticas() {
   console.log("⏳ [ORDENS] Verificando ordens automáticas...");
+  await enviarPush(uid, "🎯 Ordem executada", `${ticker}: ${tipo === "stop_loss" ? "Stop Loss" : "Stop Gain"} acionado. Você recebeu R$ ${valorVenda.toFixed(2)}.`);
   try {
     const { data: ordens } = await supabase.from("ordens_automaticas")
       .select("*, fundos(*)")
@@ -1840,6 +1842,118 @@ async function executarOrdensLimitadas() {
     console.error("❌ [ORDENS LIMITADAS] Erro:", e.message);
   }
 }
+
+// ==========================================
+// NOTIFICAÇÕES PUSH (FCM)
+// ==========================================
+const admin = require("firebase-admin");
+
+let firebaseAdminReady = false;
+try {
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n");
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: privateKey
+        })
+      });
+    }
+    firebaseAdminReady = true;
+    console.log("🔔 Firebase Admin pronto para push");
+  } else {
+    console.warn("⚠️ Firebase Admin não configurado. Push desabilitado.");
+  }
+} catch (e) {
+  console.error("❌ Erro ao inicializar Firebase Admin:", e.message);
+}
+
+// Salvar token do dispositivo
+app.post("/push/registrar", authMiddleware, async (req, res) => {
+  try {
+    const { token, plataforma } = req.body;
+    if (!token) return res.status(400).json({ erro: "Token obrigatório" });
+    await supabase.from("push_tokens").upsert({
+      uid: req.user.uid,
+      token,
+      plataforma: plataforma || "web",
+      atualizado_em: new Date()
+    }, { onConflict: "token" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao registrar token" });
+  }
+});
+
+// Remover token (logout)
+app.delete("/push/remover/:token", authMiddleware, async (req, res) => {
+  try {
+    await supabase.from("push_tokens").delete().eq("uid", req.user.uid).eq("token", req.params.token);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao remover token" });
+  }
+});
+
+// Função interna para enviar notificação
+async function enviarPush(uid, titulo, corpo, tipo = "geral") {
+  if (!firebaseAdminReady) return false;
+  try {
+    const { data: tokens } = await supabase.from("push_tokens").select("token").eq("uid", uid);
+    if (!tokens || tokens.length === 0) return false;
+
+    const tokensList = tokens.map(t => t.token);
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens: tokensList,
+      notification: { title: titulo, body: corpo },
+      data: { tipo, uid },
+      webpush: {
+        fcmOptions: { link: "/dashboard.html" }
+      }
+    });
+
+    // Remove tokens inválidos
+    const invalidos = [];
+    response.responses.forEach((r, i) => {
+      if (!r.success) invalidos.push(tokensList[i]);
+    });
+    if (invalidos.length > 0) {
+      await supabase.from("push_tokens").delete().in("token", invalidos);
+    }
+
+    await supabase.from("notificacoes_enviadas").insert({
+      uid, titulo, corpo, tipo
+    });
+
+    console.log(`🔔 Push enviado para ${uid} (${response.successCount} sucesso)`);
+    return true;
+  } catch (e) {
+    console.error("❌ Erro ao enviar push:", e.message);
+    return false;
+  }
+}
+
+// Testar notificação (chamar manualmente)
+app.post("/push/testar", authMiddleware, async (req, res) => {
+  const enviado = await enviarPush(
+    req.user.uid,
+    "🔔 Teste Atlax AI",
+    "Se você está vendo isso, as notificações estão funcionando!"
+  );
+  res.json({ ok: enviado });
+});
+
+// Histórico de notificações recebidas
+app.get("/push/historico/:uid", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("notificacoes_enviadas")
+    .select("*").eq("uid", req.user.uid)
+    .order("enviado_em", { ascending: false }).limit(50);
+  res.json(data || []);
+});
+
+// ==========================================
 
 app.use((req, res) => {
   res.status(404).json({ erro: "Rota não encontrada", path: req.path });
