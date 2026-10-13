@@ -597,10 +597,10 @@ app.post("/compliance/kyc", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/compliance/kyc", const { data } = await supabase.from("kyc").select("*").eq("uid", req.user.uid).single();
+app.get("/compliance/kyc", authMiddleware, async (req, res) => {
+  const { data } = await supabase.from("kyc").select("*").eq("uid", req.user.uid).single();
   res.json(data || {});
 });
-
 const PERGUNTAS_SUITABILITY = [
   { id: 1, texto: "Qual seu objetivo principal ao investir?", respostas: [
     { t: "Preservar capital", p: 0 },
