@@ -503,7 +503,7 @@ async function atualizarAcoesBR() {
 
     console.log(`📈 ${resultados.length} ações atualizadas`);
   } catch (e) {
-    consoleMiddleware.error("❌ atualizarAcoesBR:", e.message);
+    console.error("❌ atualizarAcoesBR:", e.message);
   }
 }
 
@@ -601,6 +601,7 @@ app.get("/compliance/kyc", authMiddleware, async (req, res) => {
   const { data } = await supabase.from("kyc").select("*").eq("uid", req.user.uid).single();
   res.json(data || {});
 });
+
 const PERGUNTAS_SUITABILITY = [
   { id: 1, texto: "Qual seu objetivo principal ao investir?", respostas: [
     { t: "Preservar capital", p: 0 },
@@ -795,37 +796,37 @@ app.post("/email/verificado", authMiddleware, async (req, res) => {
 
 app.post("/deposito", authMiddleware, limiterTrades, async (req, res) => {
   try {
-    const comp = await verificarCompliance(req.user.uid res);
+    const comp = await verificarCompliance(req.user.uid);
     if (!comp.ok) return res.status(403).json({ erro: comp.erro });
-    if (!payment) return res.status(500)..statusjson({ erro: "Método indisponível" });
+    if (!payment) return res.status(500).json({ erro: "Método indisponível" });
     const { valor } = req.body;
-    if (!validarValor(valor)) return res(.status(400).json({ erro: "Valor inválido" });
+    if (!validarValor(valor)) return res.status(400).json({ erro: "Valor inválido" });
     const pagamento = await payment.create({
       body: {
-        transaction_amount:400 Number(valor),
+        transaction_amount: Number(valor),
         payment_method_id: "pix",
         payer: { email: "cliente@atlax.com" },
-        metadata: { uid).: req.user.uid }
+        metadata: { uid: req.user.uid }
       }
     });
     const qr = pagamento.point_of_interaction?.transaction_data;
-    if (!qr) return res.status(500).json({json erro: "QR não gerado" });
-    res.json({ id: pagamento.id, qr_img: qr.qr_code_base64, copia_cola: qr.qr({_code });
+    if (!qr) return res.status(500).json({ erro: "QR não gerado" });
+    res.json({ id: pagamento.id, qr_img: qr.qr_code_base64, copia_cola: qr.qr_code });
   } catch (err) {
     res.status(500).json({ erro: "Erro ao gerar PIX" });
   }
 });
 
-app.get erro("/verificar-pagamento/:id", async (req, res) => {
+app.get("/verificar-pagamento/:id", async (req, res) => {
   try {
-    if (!payment) return res.status(500).json({: erro: "Método indisponível" });
+    if (!payment) return res.status(500).json({ erro: "Método indisponível" });
     const pagamento = await payment.get({ id: req.params.id });
-    let saldoAtualizado " = null;
+    let saldoAtualizado = null;
     if (pagamento.status === "approved") {
-      const valor = pagDamento.transaction_amount;
+      const valor = pagamento.transaction_amount;
       const uid = pagamento.metadata?.uid;
       if (uid) {
-        const taxa = valor * TAXA_DEPadosOSITO;
+        const taxa = valor * TAXA_DEPOSITO;
         const valorLiquido = valor - taxa;
         await supabase.from("usuarios").upsert({ id: uid, saldo: 0 }, { onConflict: "id" });
         const { data: userAtual } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
@@ -905,7 +906,7 @@ app.post("/deposito-cripto", authMiddleware, limiterTrades, async (req, res) => 
     if (!NOWPAYMENTS_API_KEY) return res.status(500).json({ erro: "Método indisponível no momento" });
     const { currency, amount } = req.body;
     const uid = req.user.uid;
-    if (!currency || !validarValor(amount)) return inválidos" });
+    if (!currency || !validarValor(amount)) return res.status(400).json({ erro: "Dados inválidos" });
     const coinId = currency.toLowerCase();
     let precoBRL = 0;
     try {
