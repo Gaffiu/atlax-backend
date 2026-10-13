@@ -1844,6 +1844,53 @@ async function executarOrdensLimitadas() {
 }
 
 // ==========================================
+// TRAILING STOP
+// ==========================================
+app.post("/trailing-stop/criar", authMiddleware, limiterTrades, async (req, res) => {
+  const { ticker, nome, tipo_operacao, distancia_trailing } = req.body;
+  if (!ticker || !validarValor(distancia_trailing)) {
+    return res.status(400).json({ erro: "Dados inválidos" });
+  }
+  if (!["compra", "venda"].includes(tipo_operacao)) {
+    return res.status(400).json({ erro: "Tipo inválido" });
+  }
+
+  // Buscar preço atual
+  let precoAtual = null;
+  try {
+    if (BRAPI_API_KEY) {
+      const { data: cot } = await axios.get(`https://brapi.dev/api/quote/${ticker}`, { params: { token: BRAPI_API_KEY } });
+      precoAtual = cot?.results?.[0]?.regularMarketPrice;
+    }
+    if (!precoAtual) {
+      const coinId = MAPA_CRIPTO[ticker.toUpperCase()] || ticker.toLowerCase();
+      const { data: cg } = await axios.get("https://api.coingecko.com/api/v3/simple/price", { params: { ids: coinId, vs_currencies: "brl" } });
+      precoAtual = cg[coinId]?.brl;
+    }
+  } catch (e) {}
+
+  if (!precoAtual) return res.status(400).json({ erro: "Não foi possível obter cotação" });
+
+  const { error } = await supabase.from("ordens_automaticas").insert({
+    uid: req.user.uid,
+    ticker: ticker.toUpperCase(),
+    nome: sanitizar(nome || ticker, 100),
+    tipo: "trailing_stop",
+    tipo_trailing: tipo_operacao,
+    distancia_trailing: Number(distancia_trailing),
+    preco_maximo: tipo_operacao === "venda" ? precoAtual : 0,
+    preco_minimo: tipo_operacao === "compra" ? precoAtual : 0,
+    ativo: true,
+    status: "ativa"
+  });
+
+  if (error) return res.status(500).json({ erro: "Erro ao criar ordem" });
+  res.json({ ok: true, preco_inicial: precoAtual });
+});
+
+// ==========================================
+
+// ==========================================
 // NOTIFICAÇÕES PUSH (FCM)
 // ==========================================
 const admin = require("firebase-admin");
