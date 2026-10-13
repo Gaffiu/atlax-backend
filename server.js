@@ -1094,9 +1094,27 @@ async function executarOrdensAutomaticas() {
           continue;
         }
         const rentabilidadeAtual = ((precoAtual - precoMedio) / precoMedio) * 100;
-        let executar = false;
-        if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) executar = true;
-        else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) executar = true;
+let executar = false;
+
+if (tipo === "trailing_stop") {
+  const distancia = Number(ordem.distancia_trailing || 0);
+  if (ordem.tipo_trailing === "venda") {
+    const novoMax = Math.max(Number(ordem.preco_maximo || 0), precoAtual);
+    const gatilho = novoMax * (1 - distancia / 100);
+    if (precoAtual <= gatilho) executar = true;
+    else {
+      await supabase.from("ordens_automaticas").update({ preco_maximo: novoMax }).eq("id", ordem.id);
+    }
+  } else {
+    const novoMin = ordem.preco_minimo > 0 ? Math.min(Number(ordem.preco_minimo), precoAtual) : precoAtual;
+    const gatilho = novoMin * (1 + distancia / 100);
+    if (precoAtual >= gatilho) executar = true;
+    else {
+      await supabase.from("ordens_automaticas").update({ preco_minimo: novoMin }).eq("id", ordem.id);
+    }
+  }
+} else if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) executar = true;
+else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) executar = true;
         if (executar) {
           const valorVenda = precoAtual * quantidade;
           const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
