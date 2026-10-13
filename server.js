@@ -82,8 +82,8 @@ const SAQUE_MINIMO = 100;
 
 const BONUS_MINIMO = 20;
 const BONUS_MAXIMO = 200;
-const BONUS_MULTIPLICADOR = 2;      // 2x o valor depositado
-const ROLLOVER_MULTIPLICADOR = 5;   // 5x o bônus em volume de trade
+const BONUS_MULTIPLICADOR = 2;
+const ROLLOVER_MULTIPLICADOR = 5;
 
 const VERSAO_TERMOS = "v1.0";
 
@@ -217,7 +217,6 @@ async function registrarVolumeTrade(uid, valorOperacao) {
     const meta = Number(user.rollover_meta || 0);
 
     if (novoProgresso >= meta) {
-      // Rollover atingido: libera o bônus
       const { data: userAtual } = await supabase.from("usuarios")
         .select("saldo, bonus_bloqueado").eq("id", uid).single();
       const novoSaldo = Number(userAtual.saldo || 0) + Number(userAtual.bonus_bloqueado);
@@ -232,6 +231,7 @@ async function registrarVolumeTrade(uid, valorOperacao) {
         liberado_em: new Date()
       }).eq("uid", uid).eq("status", "bloqueado");
       console.log(`✅ Rollover completo! Bônus liberado para ${uid}`);
+      await enviarPush(uid, "🎉 Bônus liberado!", `Você completou o rollover e R$ ${Number(userAtual.bonus_bloqueado).toFixed(2)} foram creditados no seu saldo.`, "bonus");
     } else {
       await supabase.from("usuarios").update({
         rollover_progresso: novoProgresso
@@ -676,7 +676,6 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
       if (uid) {
         const taxa = valor * TAXA_DEPOSITO;
         const valorLiquido = valor - taxa;
-        await enviarPush(uid, "✅ Depósito aprovado", `Seu saldo foi creditado com R$ ${valorLiquido.toFixed(2)}.`);
         await supabase.from("usuarios").upsert({ id: uid, saldo: 0 }, { onConflict: "id" });
         const { data: userAtual } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
         const novoSaldo = (userAtual?.saldo ?? 0) + Number(valorLiquido);
@@ -685,7 +684,7 @@ app.get("/verificar-pagamento/:id", async (req, res) => {
           { uid, tipo: "deposito", valor: Number(valorLiquido), status: "aprovado" },
           { uid: "admin", tipo: "taxa_deposito", valor: Number(taxa), status: "aprovado", categoria: "taxa" }
         ]);
-        // 🎁 Aplicar bônus se for o primeiro depósito
+        await enviarPush(uid, "✅ Depósito aprovado", `Seu saldo foi creditado com R$ ${valorLiquido.toFixed(2)}.`, "deposito");
         await processarBonusPrimeiroDeposito(uid, valorLiquido);
         saldoAtualizado = novoSaldo;
       }
@@ -804,6 +803,7 @@ app.post("/webhook/nowpayments", async (req, res) => {
     const novoSaldo = (userAtual?.saldo ?? 0) + Number(valorReais);
     await supabase.from("usuarios").update({ saldo: novoSaldo }).eq("id", uid);
     await supabase.from("transactions").insert({ uid, tipo: "deposito_cripto", valor: Number(valorReais), status: "aprovado", categoria: deposito.currency });
+    await enviarPush(uid, "✅ Depósito em cripto confirmado", `R$ ${Number(valorReais).toFixed(2)} creditados no seu saldo.`, "deposito");
     await processarBonusPrimeiroDeposito(uid, valorReais);
     res.status(200).send("OK");
   } catch (err) {
@@ -1051,9 +1051,9 @@ app.post("/cripto/vender", authMiddleware, limiterTrades, async (req, res) => {
 });
 
 // ========== MOTOR DE ORDENS AUTOMÁTICAS ==========
+// ⚠️ BUG CORRIGIDO: enviarPush fora de escopo removido; agora é chamado dentro do if(executar)
 async function executarOrdensAutomaticas() {
   console.log("⏳ [ORDENS] Verificando ordens automáticas...");
-  await enviarPush(uid, "🎯 Ordem executada", `${ticker}: ${tipo === "stop_loss" ? "Stop Loss" : "Stop Gain"} acionado. Você recebeu R$ ${valorVenda.toFixed(2)}.`);
   try {
     const { data: ordens } = await supabase.from("ordens_automaticas")
       .select("*, fundos(*)")
@@ -1110,27 +1110,28 @@ async function executarOrdensAutomaticas() {
           continue;
         }
         const rentabilidadeAtual = ((precoAtual - precoMedio) / precoMedio) * 100;
-let executar = false;
+        let executar = false;
 
-if (tipo === "trailing_stop") {
-  const distancia = Number(ordem.distancia_trailing || 0);
-  if (ordem.tipo_trailing === "venda") {
-    const novoMax = Math.max(Number(ordem.preco_maximo || 0), precoAtual);
-    const gatilho = novoMax * (1 - distancia / 100);
-    if (precoAtual <= gatilho) executar = true;
-    else {
-      await supabase.from("ordens_automaticas").update({ preco_maximo: novoMax }).eq("id", ordem.id);
-    }
-  } else {
-    const novoMin = ordem.preco_minimo > 0 ? Math.min(Number(ordem.preco_minimo), precoAtual) : precoAtual;
-    const gatilho = novoMin * (1 + distancia / 100);
-    if (precoAtual >= gatilho) executar = true;
-    else {
-      await supabase.from("ordens_automaticas").update({ preco_minimo: novoMin }).eq("id", ordem.id);
-    }
-  }
-} else if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) executar = true;
-else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) executar = true;
+        if (tipo === "trailing_stop") {
+          const distancia = Number(ordem.distancia_trailing || 0);
+          if (ordem.tipo_trailing === "venda") {
+            const novoMax = Math.max(Number(ordem.preco_maximo || 0), precoAtual);
+            const gatilho = novoMax * (1 - distancia / 100);
+            if (precoAtual <= gatilho) executar = true;
+            else {
+              await supabase.from("ordens_automaticas").update({ preco_maximo: novoMax }).eq("id", ordem.id);
+            }
+          } else {
+            const novoMin = ordem.preco_minimo > 0 ? Math.min(Number(ordem.preco_minimo), precoAtual) : precoAtual;
+            const gatilho = novoMin * (1 + distancia / 100);
+            if (precoAtual >= gatilho) executar = true;
+            else {
+              await supabase.from("ordens_automaticas").update({ preco_minimo: novoMin }).eq("id", ordem.id);
+            }
+          }
+        } else if (tipo === "stop_loss" && rentabilidadeAtual <= -Math.abs(rentabilidadeAlvo)) executar = true;
+        else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) executar = true;
+
         if (executar) {
           const valorVenda = precoAtual * quantidade;
           const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
@@ -1144,6 +1145,18 @@ else if (tipo === "stop_gain" && rentabilidadeAtual >= rentabilidadeAlvo) execut
             await supabase.from("transactions").insert({ uid, tipo: "venda_cripto_auto", valor: valorVenda, status: "aprovado", categoria: `${ticker} (${tipo})` });
           }
           await registrarVolumeTrade(uid, Number(valorVenda));
+
+          // ✅ PUSH CORRETO — só agora, com todos os valores definidos
+          const tipoLabel = tipo === "stop_loss" ? "Stop Loss"
+                          : tipo === "stop_gain" ? "Stop Gain"
+                          : "Trailing Stop";
+          await enviarPush(
+            uid,
+            "🎯 Ordem executada",
+            `${ticker}: ${tipoLabel} acionado. Você recebeu R$ ${valorVenda.toFixed(2)}.`,
+            "ordem"
+          );
+
           await supabase.from("ordens_automaticas").update({
             ativo: false, status: "executada", data_execucao: new Date(),
             preco_execucao: precoAtual, rentabilidade_execucao: rentabilidadeAtual,
@@ -1782,6 +1795,13 @@ async function verificarAlertasPreco() {
             preco_no_disparo: precoAtual
           }).eq("id", alerta.id);
           console.log(`  🔔 Alerta disparado: ${ticker} a R$ ${precoAtual.toFixed(2)}`);
+          // ✅ PUSH: alerta de preço disparado
+          await enviarPush(
+            alerta.uid,
+            "🔔 Alerta de preço disparado",
+            `${ticker} atingiu R$ ${precoAtual.toFixed(2)} (${alerta.condicao} de R$ ${Number(alerta.preco_alvo).toFixed(2)}).`,
+            "alerta"
+          );
         }
       } catch (e) {}
       await new Promise(r => setTimeout(r, 500));
@@ -1827,6 +1847,7 @@ async function executarOrdensLimitadas() {
         else if (ordem.tipo_operacao === "venda" && precoAtual >= ordem.preco_limite) executar = true;
         if (executar) {
           const uid = ordem.uid;
+          let valorExecutado = 0;
           if (ordem.tipo_operacao === "compra") {
             const valorCompra = ordem.valor_ou_quantidade;
             const { data: user } = await supabase.from("usuarios").select("saldo").eq("id", uid).single();
@@ -1841,6 +1862,7 @@ async function executarOrdensLimitadas() {
                 uid, tipo: "investimento_rv_limite", valor: valorCompra, status: "aprovado", categoria: `${ticker} (limite)`
               });
               await registrarVolumeTrade(uid, Number(valorCompra));
+              valorExecutado = valorCompra;
             }
           } else {
             const quantidade = ordem.valor_ou_quantidade;
@@ -1856,6 +1878,7 @@ async function executarOrdensLimitadas() {
                 uid, tipo: "venda_rv_limite", valor: valorVenda, status: "aprovado", categoria: `${ticker} (limite)`
               });
               await registrarVolumeTrade(uid, Number(valorVenda));
+              valorExecutado = valorVenda;
             }
           }
           await supabase.from("ordens_limitadas").update({
@@ -1864,6 +1887,15 @@ async function executarOrdensLimitadas() {
             preco_execucao: precoAtual,
             processando_desde: null
           }).eq("id", ordem.id);
+          // ✅ PUSH: ordem limitada executada
+          if (valorExecutado > 0) {
+            await enviarPush(
+              uid,
+              "🎯 Ordem limitada executada",
+              `${ticker}: ${ordem.tipo_operacao === "compra" ? "Compra" : "Venda"} a R$ ${precoAtual.toFixed(2)} (R$ ${valorExecutado.toFixed(2)}).`,
+              "ordem"
+            );
+          }
         } else {
           await supabase.from("ordens_limitadas").update({ processando_desde: null }).eq("id", ordem.id);
         }
@@ -1889,7 +1921,6 @@ app.post("/trailing-stop/criar", authMiddleware, limiterTrades, async (req, res)
     return res.status(400).json({ erro: "Tipo inválido" });
   }
 
-  // Buscar preço atual
   let precoAtual = null;
   try {
     if (BRAPI_API_KEY) {
@@ -1923,8 +1954,6 @@ app.post("/trailing-stop/criar", authMiddleware, limiterTrades, async (req, res)
 });
 
 // ==========================================
-
-// ==========================================
 // NOTIFICAÇÕES PUSH (FCM)
 // ==========================================
 const admin = require("firebase-admin");
@@ -1951,7 +1980,6 @@ try {
   console.error("❌ Erro ao inicializar Firebase Admin:", e.message);
 }
 
-// Salvar token do dispositivo
 app.post("/push/registrar", authMiddleware, async (req, res) => {
   try {
     const { token, plataforma } = req.body;
@@ -1968,7 +1996,6 @@ app.post("/push/registrar", authMiddleware, async (req, res) => {
   }
 });
 
-// Remover token (logout)
 app.delete("/push/remover/:token", authMiddleware, async (req, res) => {
   try {
     await supabase.from("push_tokens").delete().eq("uid", req.user.uid).eq("token", req.params.token);
@@ -1978,7 +2005,6 @@ app.delete("/push/remover/:token", authMiddleware, async (req, res) => {
   }
 });
 
-// Função interna para enviar notificação
 async function enviarPush(uid, titulo, corpo, tipo = "geral") {
   if (!firebaseAdminReady) return false;
   try {
@@ -1995,7 +2021,6 @@ async function enviarPush(uid, titulo, corpo, tipo = "geral") {
       }
     });
 
-    // Remove tokens inválidos
     const invalidos = [];
     response.responses.forEach((r, i) => {
       if (!r.success) invalidos.push(tokensList[i]);
@@ -2016,7 +2041,6 @@ async function enviarPush(uid, titulo, corpo, tipo = "geral") {
   }
 }
 
-// Testar notificação (chamar manualmente)
 app.post("/push/testar", authMiddleware, async (req, res) => {
   const enviado = await enviarPush(
     req.user.uid,
@@ -2026,7 +2050,6 @@ app.post("/push/testar", authMiddleware, async (req, res) => {
   res.json({ ok: enviado });
 });
 
-// Histórico de notificações recebidas
 app.get("/push/historico/:uid", authMiddleware, async (req, res) => {
   const { data } = await supabase.from("notificacoes_enviadas")
     .select("*").eq("uid", req.user.uid)
@@ -2037,7 +2060,6 @@ app.get("/push/historico/:uid", authMiddleware, async (req, res) => {
 // ==========================================
 
 app.get("/admin/erros", authMiddleware, async (req, res) => {
-  // Só admin pode ver (trocamos para o seu UID)
   const ADMIN_UIDS = (process.env.ADMIN_UIDS || "").split(",").filter(Boolean);
   if (ADMIN_UIDS.length > 0 && !ADMIN_UIDS.includes(req.user.uid)) {
     return res.status(403).json({ erro: "Acesso negado" });
