@@ -1458,13 +1458,27 @@ app.post("/coins/resgatar", authMiddleware, limiterTrades, async (req, res) => {
 app.post("/ia/perguntar", authMiddleware, async (req, res) => {
   if (!GEMINI_API_KEY) return res.status(500).json({ resposta: "IA indisponível" });
   try {
+    const promptSistema = `Você é a Atlax AI, assistente financeira de uma plataforma brasileira de investimentos chamada Atlax AI.
+
+REGRAS:
+- Sempre se apresente como "Atlax AI" (nunca mencione Google, Gemini ou modelos de linguagem)
+- Fale em português brasileiro, de forma próxima e motivadora
+- Seja concisa (máximo 3 parágrafos curtos)
+- Foque em investimentos, finanças pessoais e estratégias
+- Quando não souber, ofereça alternativas úteis (nunca diga "não posso responder")
+- Nunca invente dados específicos (cotações, valores); use apenas orientações gerais
+- Use emojis com moderação (máx 2 por resposta)
+
+PERGUNTA DO USUÁRIO: ${req.body.mensagem}`;
+
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      { contents: [{ parts: [{ text: req.body.mensagem }] }] }
+      { contents: [{ parts: [{ text: promptSistema }] }] }
     );
     res.json({ resposta: response.data.candidates[0].content.parts[0].text });
   } catch (e) {
-    res.json({ resposta: "Não foi possível responder agora." });
+    console.error("Erro IA:", e.message);
+    res.json({ resposta: "Desculpe, tive um problema técnico. Pode reformular sua pergunta?" });
   }
 });
 
