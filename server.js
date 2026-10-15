@@ -2151,6 +2151,81 @@ async function executarOrdensLimitadas() {
   }
 }
 
+// ============================================================
+// 🔥 IGNIÇÃO — PROMOÇÕES
+// ============================================================
+app.get("/promocoes", async (_, res) => {
+  try {
+    const { data } = await supabase.from("promocoes")
+      .select("*")
+      .eq("ativo", true)
+      .order("ordem", { ascending: true });
+    res.json(data || []);
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao buscar promoções" });
+  }
+});
+
+app.get("/promocoes/meu/:uid", authMiddleware, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const { data: promos } = await supabase.from("promocoes")
+      .select("*").eq("ativo", true).order("ordem", { ascending: true });
+    const { data: meus } = await supabase.from("promocoes_usuarios")
+      .select("*").eq("uid", uid);
+
+    const mapaMeus = {};
+    (meus || []).forEach(m => { mapaMeus[m.promocao_id] = m; });
+
+    const resultado = (promos || []).map(p => ({
+      ...p,
+      progresso_usuario: mapaMeus[p.id]?.progresso || 0,
+      completada_usuario: mapaMeus[p.id]?.completada || false,
+      resgatada_usuario: mapaMeus[p.id]?.recompensa_resgatada || false
+    }));
+
+    res.json(resultado);
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao buscar promoções" });
+  }
+});
+
+app.post("/promocoes/:id/resgatar", authMiddleware, limiterTrades, async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const promoId = parseInt(req.params.id);
+    const { data: promo } = await supabase.from("promocoes").select("*").eq("id", promoId).single();
+    if (!promo) return res.status(404).json({ erro: "Promoção não encontrada" });
+
+    const { data: registro } = await supabase.from("promocoes_usuarios")
+      .select("*").eq("uid", uid).eq("promocao_id", promoId).maybeSingle();
+
+    if (!registro || !registro.completada) {
+      return res.status(400).json({ erro: "Você ainda não completou essa promoção" });
+    }
+    if (registro.recompensa_resgatada) {
+      return res.status(400).json({ erro: "Recompensa já resgatada" });
+    }
+
+    // Crédito da recompensa
+    if (promo.recompensa_tipo === "coins") {
+      const { data: user } = await supabase.from("usuarios").select("atlax_coins").eq("id", uid).single();
+      const novo = Number(user?.atlax_coins || 0) + Number(promo.recompensa_valor || 0);
+      await supabase.from("usuarios").update({ atlax_coins: novo }).eq("id", uid);
+    } else if (promo.recompensa_tipo === "bonus") {
+      await processarBonusPrimeiroDeposito(uid, Number(promo.recompensa_valor || 0));
+    }
+
+    await supabase.from("promocoes_usuarios").update({
+      recompensa_resgatada: true, concluida_em: new Date()
+    }).eq("id", registro.id);
+
+    res.json({ ok: true, recompensa: promo.recompensa_texto });
+  } catch (e) {
+    res.status(500).json({ erro: "Erro ao resgatar" });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ erro: "Rota não encontrada", path: req.path });
 });
