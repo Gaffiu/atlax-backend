@@ -51,39 +51,25 @@ function paraSimboloYahoo(ticker) {
 
 // Busca cotações em batch + retry individual
 async function buscarCotacoesYahoo(tickers) {
-  if (!Array.isArray(tickers) || tickers.length === 0) {
-    return [];
-  }
+  if (!Array.isArray(tickers) || tickers.length === 0) return [];
 
-  const simbolos = [];
-  for (let i = 0; i < tickers.length; i++) {
-    simbolos.push(paraSimboloYahoo(tickers[i]));
-  }
-
+  const simbolos = tickers.map(paraSimboloYahoo);
   const mapaSimbolo = {};
-  for (let i = 0; i < tickers.length; i++) {
-    mapaSimbolo[simbolos[i]] = tickers[i];
-  }
+  tickers.forEach((t, i) => { mapaSimbolo[simbolos[i]] = t; });
 
-  // Dividir em lotes de 20
   const LOTE = 20;
   const lotes = [];
-  let pos = 0;
-  while (pos < simbolos.length) {
-    lotes.push(simbolos.slice(pos, pos + LOTE));
-    pos = pos + LOTE;
+  for (let i = 0; i < simbolos.length; i += LOTE) {
+    lotes.push(simbolos.slice(i, i + LOTE));
   }
 
   const resultadosMap = new Map();
 
-  // 1º passe: batch
-  for (let i = 0; i < lotes.length; i++) {
-    const lote = lotes[i];
+  for (const lote of lotes) {
     try {
       const resposta = await yahooFinance.quote(lote);
       const lista = Array.isArray(resposta) ? resposta : [resposta];
-      for (let j = 0; j < lista.length; j++) {
-        const r = lista[j];
+      for (const r of lista) {
         if (r && r.regularMarketPrice) {
           resultadosMap.set(r.symbol, r);
         }
@@ -91,43 +77,32 @@ async function buscarCotacoesYahoo(tickers) {
     } catch (e) {
       console.warn("  ⚠️ Yahoo lote falhou: " + e.message);
     }
-    await new Promise(function (res) { setTimeout(res, 300); });
+    await new Promise((res) => setTimeout(res, 300));
   }
 
-  // 2º passe: retry individual
-  const faltantes = [];
-  for (let i = 0; i < simbolos.length; i++) {
-    if (!resultadosMap.has(simbolos[i])) {
-      faltantes.push(simbolos[i]);
-    }
-  }
-
+  const faltantes = simbolos.filter((s) => !resultadosMap.has(s));
   if (faltantes.length > 0) {
     console.log("  🔄 Retry individual para " + faltantes.length + " tickers...");
-    for (let i = 0; i < faltantes.length; i++) {
-      const simbolo = faltantes[i];
+    for (const simbolo of faltantes) {
       try {
         const r = await yahooFinance.quote(simbolo);
         const item = Array.isArray(r) ? r[0] : r;
         if (item && item.regularMarketPrice) {
           resultadosMap.set(item.symbol, item);
+        } else {
+          console.warn("     ❌ " + simbolo + " sem preço no Yahoo");
         }
       } catch (e) {
-        // Silencioso
+        console.warn("     ❌ " + simbolo + ": " + e.message);
       }
-      await new Promise(function (res) { setTimeout(res, 150); });
+      await new Promise((res) => setTimeout(res, 200));
     }
   }
 
-  // Converter para array de retorno
   const resultados = [];
-  resultadosMap.forEach(function (r) {
-    let tickerOriginal = mapaSimbolo[r.symbol];
-    if (!tickerOriginal) {
-      tickerOriginal = r.symbol.replace(".SA", "");
-    }
+  resultadosMap.forEach((r) => {
     resultados.push({
-      ticker: tickerOriginal,
+      ticker: mapaSimbolo[r.symbol] || r.symbol.replace(".SA", ""),
       preco: r.regularMarketPrice,
       variacao: r.regularMarketChangePercent || 0,
       nome: r.longName || r.shortName || r.symbol,
