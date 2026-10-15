@@ -1487,14 +1487,28 @@ app.post("/ia/analisar", authMiddleware, async (req, res) => {
   try {
     const { data: user } = await supabase.from("usuarios").select("*").eq("id", req.user.uid).single();
     const { data: transacoes } = await supabase.from("transactions").select("*").eq("uid", req.user.uid).limit(20);
-    const prompt = `Analise: saldo R$ ${user.saldo}, transações ${JSON.stringify(transacoes)}. Gere análise + sugestões.`;
+    
+    const prompt = `Você é a Atlax AI, assistente financeira da plataforma Atlax AI.
+
+Analise os dados do usuário e forneça:
+1. Análise resumida (2-3 frases)
+2. 3 sugestões práticas personalizadas
+3. Um alerta ou ponto de atenção
+
+NUNCA mencione Google ou Gemini. Seja motivadora e próxima.
+
+DADOS DO USUÁRIO:
+- Saldo: R$ ${user.saldo || 0}
+- Transações recentes: ${JSON.stringify(transacoes || [])}`;
+
     const response = await axios.post(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       { contents: [{ parts: [{ text: prompt }] }] }
     );
     res.json({ resposta: response.data.candidates[0].content.parts[0].text });
   } catch (e) {
-    res.json({ resposta: "Não foi possível analisar agora." });
+    console.error("Erro IA análise:", e.message);
+    res.json({ resposta: "Desculpe, não consegui analisar sua carteira agora. Tente novamente em instantes." });
   }
 });
 
