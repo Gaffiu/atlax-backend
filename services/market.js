@@ -62,7 +62,7 @@ async function buscarCotacoesYahoo(tickers) {
   const LOTE = 20;
   const lotes = [];
   for (let i = 0; i < simbolos.length; i += LOTE) {
-    lotes.push(simbolos.slice.(i, i + LOTE));
+    lotes.push(simbolos.slice(i, i + LOTE));
   }
 
   const resultadosMap = new Map();
